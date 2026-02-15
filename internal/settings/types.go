@@ -76,5 +76,7 @@ func RequiredOTelEnv(grpcPort int) map[string]string {
 		"OTEL_EXPORTER_OTLP_ENDPOINT": fmt.Sprintf("http://localhost:%d", grpcPort),
 		"OTEL_METRIC_EXPORT_INTERVAL": "5000",
 		"OTEL_LOGS_EXPORT_INTERVAL":   "2000",
+		"OTEL_LOG_USER_PROMPTS":       "1",
+		"OTEL_LOG_TOOL_DETAILS":       "1",
 	}
 }

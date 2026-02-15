@@ -286,6 +286,8 @@ func TestSettingsMerge_DifferentValue_NonInteractive(t *testing.T) {
 			"OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:9090", // Different!
 			"OTEL_METRIC_EXPORT_INTERVAL": "5000",
 			"OTEL_LOGS_EXPORT_INTERVAL":   "2000",
+			"OTEL_LOG_USER_PROMPTS":       "1",
+			"OTEL_LOG_TOOL_DETAILS":       "1",
 		},
 	}
 	data, _ := json.MarshalIndent(initial, "", "  ")
@@ -329,6 +331,8 @@ func TestSettingsMerge_FixWrongPort(t *testing.T) {
 			"OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:9090",
 			"OTEL_METRIC_EXPORT_INTERVAL": "5000",
 			"OTEL_LOGS_EXPORT_INTERVAL":   "2000",
+			"OTEL_LOG_USER_PROMPTS":       "1",
+			"OTEL_LOG_TOOL_DETAILS":       "1",
 			"CUSTOM_VAR":                  "preserve_me",
 		},
 	}
