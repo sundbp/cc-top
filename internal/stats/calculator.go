@@ -42,34 +42,41 @@ func (c *Calculator) Compute(sessions []state.SessionData) DashboardStats {
 
 // computeLinesOfCode returns the total lines added and removed across
 // all sessions based on claude_code.lines_of_code.count metrics.
+// For cumulative counters, only the latest (last in append-ordered list)
+// value per session+type is used.
 func (c *Calculator) computeLinesOfCode(sessions []state.SessionData) (added, removed int) {
 	for i := range sessions {
+		var lastAdded, lastRemoved float64
 		for _, m := range sessions[i].Metrics {
 			if m.Name != "claude_code.lines_of_code.count" {
 				continue
 			}
-			typ := m.Attributes["type"]
-			switch typ {
+			switch m.Attributes["type"] {
 			case "added":
-				added += int(m.Value)
+				lastAdded = m.Value
 			case "removed":
-				removed += int(m.Value)
+				lastRemoved = m.Value
 			}
 		}
+		added += int(lastAdded)
+		removed += int(lastRemoved)
 	}
 	return
 }
 
-// computeCounterMetric sums the latest value of a named counter metric
-// across all sessions.
+// computeCounterMetric returns the sum of the latest value of a named
+// cumulative counter metric across all sessions. For each session, only
+// the last (most recent) metric value matching the name is used.
 func (c *Calculator) computeCounterMetric(sessions []state.SessionData, metricName string) int {
 	var total int
 	for i := range sessions {
+		var last float64
 		for _, m := range sessions[i].Metrics {
 			if m.Name == metricName {
-				total += int(m.Value)
+				last = m.Value
 			}
 		}
+		total += int(last)
 	}
 	return total
 }
@@ -77,6 +84,8 @@ func (c *Calculator) computeCounterMetric(sessions []state.SessionData, metricNa
 // computeToolAcceptance calculates the acceptance rate for each tool
 // from claude_code.code_edit_tool.decision metrics.
 // Rate = accept count / total count per tool.
+// For cumulative counters, only the latest value per session+tool+decision
+// combination is used.
 func (c *Calculator) computeToolAcceptance(sessions []state.SessionData) map[string]float64 {
 	type toolCounts struct {
 		accepted int
@@ -84,22 +93,34 @@ func (c *Calculator) computeToolAcceptance(sessions []state.SessionData) map[str
 	}
 	tools := make(map[string]*toolCounts)
 
+	type toolDecisionKey struct {
+		tool     string
+		decision string
+	}
+
 	for i := range sessions {
+		latest := make(map[toolDecisionKey]float64)
+
 		for _, m := range sessions[i].Metrics {
 			if m.Name != "claude_code.code_edit_tool.decision" {
 				continue
 			}
-			toolName := m.Attributes["tool"]
-			decision := m.Attributes["decision"]
+			key := toolDecisionKey{
+				tool:     m.Attributes["tool"],
+				decision: m.Attributes["decision"],
+			}
+			latest[key] = m.Value
+		}
 
-			tc, ok := tools[toolName]
+		for key, val := range latest {
+			tc, ok := tools[key.tool]
 			if !ok {
 				tc = &toolCounts{}
-				tools[toolName] = tc
+				tools[key.tool] = tc
 			}
-			count := int(m.Value)
+			count := int(val)
 			tc.total += count
-			if strings.EqualFold(decision, "accept") {
+			if strings.EqualFold(key.decision, "accept") {
 				tc.accepted += count
 			}
 		}
@@ -119,22 +140,25 @@ func (c *Calculator) computeToolAcceptance(sessions []state.SessionData) map[str
 // computeCacheEfficiency calculates cache efficiency as:
 // cacheRead / (input + cacheRead)
 // Returns 0 if the denominator is zero (no token data).
+// For cumulative counters, only the latest value per session+type is used.
 func (c *Calculator) computeCacheEfficiency(sessions []state.SessionData) float64 {
 	var cacheRead, input float64
 
 	for i := range sessions {
+		var lastCacheRead, lastInput float64
 		for _, m := range sessions[i].Metrics {
 			if m.Name != "claude_code.token.usage" {
 				continue
 			}
-			typ := m.Attributes["type"]
-			switch typ {
+			switch m.Attributes["type"] {
 			case "cacheRead":
-				cacheRead += m.Value
+				lastCacheRead = m.Value
 			case "input":
-				input += m.Value
+				lastInput = m.Value
 			}
 		}
+		cacheRead += lastCacheRead
+		input += lastInput
 	}
 
 	denominator := input + cacheRead

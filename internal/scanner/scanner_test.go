@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"fmt"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -421,4 +422,281 @@ func findPID(procs []ProcessInfo, pid int) *ProcessInfo {
 		}
 	}
 	return nil
+}
+
+// writeTempSettings creates a temporary JSON settings file and returns its path.
+func writeTempSettings(t *testing.T, content string) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "settings-*.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(content); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return f.Name()
+}
+
+func TestReadSettingsEnv(t *testing.T) {
+	t.Run("valid settings with env block", func(t *testing.T) {
+		path := writeTempSettings(t, `{
+			"env": {
+				"CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+				"OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317",
+				"SOME_OTHER_VAR": "ignored"
+			}
+		}`)
+
+		result := readSettingsEnv(path)
+
+		if result["CLAUDE_CODE_ENABLE_TELEMETRY"] != "1" {
+			t.Error("expected CLAUDE_CODE_ENABLE_TELEMETRY=1")
+		}
+		if result["OTEL_EXPORTER_OTLP_ENDPOINT"] != "http://localhost:4317" {
+			t.Error("expected OTEL_EXPORTER_OTLP_ENDPOINT")
+		}
+		if _, ok := result["SOME_OTHER_VAR"]; ok {
+			t.Error("non-telemetry vars should be filtered out")
+		}
+	})
+
+	t.Run("missing file", func(t *testing.T) {
+		result := readSettingsEnv("/nonexistent/path/settings.json")
+		if len(result) != 0 {
+			t.Error("expected empty map for missing file")
+		}
+	})
+
+	t.Run("malformed JSON", func(t *testing.T) {
+		path := writeTempSettings(t, `{not valid json}`)
+		result := readSettingsEnv(path)
+		if len(result) != 0 {
+			t.Error("expected empty map for malformed JSON")
+		}
+	})
+
+	t.Run("no env block", func(t *testing.T) {
+		path := writeTempSettings(t, `{"someOtherKey": "value"}`)
+		result := readSettingsEnv(path)
+		if len(result) != 0 {
+			t.Error("expected empty map when no env block")
+		}
+	})
+
+	t.Run("empty env block", func(t *testing.T) {
+		path := writeTempSettings(t, `{"env": {}}`)
+		result := readSettingsEnv(path)
+		if len(result) != 0 {
+			t.Error("expected empty map for empty env block")
+		}
+	})
+
+	t.Run("all telemetry keys extracted", func(t *testing.T) {
+		path := writeTempSettings(t, `{
+			"env": {
+				"CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+				"OTEL_METRICS_EXPORTER": "otlp",
+				"OTEL_LOGS_EXPORTER": "otlp",
+				"OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317",
+				"OTEL_EXPORTER_OTLP_PROTOCOL": "grpc"
+			}
+		}`)
+
+		result := readSettingsEnv(path)
+
+		expected := map[string]string{
+			"CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+			"OTEL_METRICS_EXPORTER":        "otlp",
+			"OTEL_LOGS_EXPORTER":           "otlp",
+			"OTEL_EXPORTER_OTLP_ENDPOINT":  "http://localhost:4317",
+			"OTEL_EXPORTER_OTLP_PROTOCOL":  "grpc",
+		}
+		for k, want := range expected {
+			if got := result[k]; got != want {
+				t.Errorf("%s = %q, want %q", k, got, want)
+			}
+		}
+		if len(result) != len(expected) {
+			t.Errorf("got %d keys, want %d", len(result), len(expected))
+		}
+	})
+}
+
+func TestGlobalConfigMerge_PickedUp(t *testing.T) {
+	userSettings := writeTempSettings(t, `{
+		"env": {
+			"CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+			"OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317"
+		}
+	}`)
+
+	api := newMockAPI()
+	api.addProcess(&mockProcess{
+		info: &RawProcessInfo{PID: 4821, BinaryName: "claude"},
+		args: []string{"/usr/local/bin/claude"},
+		env:  map[string]string{},
+		cwd:  "/tmp",
+	})
+
+	s := NewScanner(api, 5*time.Second)
+	s.globalConfigPaths = []string{userSettings}
+
+	results := s.Scan()
+	if len(results) != 1 {
+		t.Fatalf("got %d processes, want 1", len(results))
+	}
+
+	p := results[0]
+	if p.EnvVars["CLAUDE_CODE_ENABLE_TELEMETRY"] != "1" {
+		t.Error("global CLAUDE_CODE_ENABLE_TELEMETRY should be picked up")
+	}
+	if p.EnvVars["OTEL_EXPORTER_OTLP_ENDPOINT"] != "http://localhost:4317" {
+		t.Error("global OTEL_EXPORTER_OTLP_ENDPOINT should be picked up")
+	}
+}
+
+func TestGlobalConfigMerge_ProcessOverridesGlobal(t *testing.T) {
+	userSettings := writeTempSettings(t, `{
+		"env": {
+			"CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+			"OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:9999"
+		}
+	}`)
+
+	api := newMockAPI()
+	api.addProcess(&mockProcess{
+		info: &RawProcessInfo{PID: 4821, BinaryName: "claude"},
+		args: []string{"/usr/local/bin/claude"},
+		env: map[string]string{
+			"CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+			"OTEL_EXPORTER_OTLP_ENDPOINT":  "http://localhost:4317",
+		},
+		cwd: "/tmp",
+	})
+
+	s := NewScanner(api, 5*time.Second)
+	s.globalConfigPaths = []string{userSettings}
+
+	results := s.Scan()
+	if len(results) != 1 {
+		t.Fatalf("got %d processes, want 1", len(results))
+	}
+
+	p := results[0]
+	if p.EnvVars["OTEL_EXPORTER_OTLP_ENDPOINT"] != "http://localhost:4317" {
+		t.Errorf("process env should override global: got %q, want %q",
+			p.EnvVars["OTEL_EXPORTER_OTLP_ENDPOINT"], "http://localhost:4317")
+	}
+}
+
+func TestGlobalConfigMerge_ManagedOverridesUser(t *testing.T) {
+	userSettings := writeTempSettings(t, `{
+		"env": {
+			"OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:9999"
+		}
+	}`)
+	managedSettings := writeTempSettings(t, `{
+		"env": {
+			"OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317"
+		}
+	}`)
+
+	api := newMockAPI()
+	api.addProcess(&mockProcess{
+		info: &RawProcessInfo{PID: 4821, BinaryName: "claude"},
+		args: []string{"/usr/local/bin/claude"},
+		env:  map[string]string{},
+		cwd:  "/tmp",
+	})
+
+	s := NewScanner(api, 5*time.Second)
+	s.globalConfigPaths = []string{userSettings, managedSettings}
+
+	results := s.Scan()
+	if len(results) != 1 {
+		t.Fatalf("got %d processes, want 1", len(results))
+	}
+
+	p := results[0]
+	if p.EnvVars["OTEL_EXPORTER_OTLP_ENDPOINT"] != "http://localhost:4317" {
+		t.Errorf("managed settings should override user: got %q, want %q",
+			p.EnvVars["OTEL_EXPORTER_OTLP_ENDPOINT"], "http://localhost:4317")
+	}
+}
+
+func TestGlobalConfigMerge_MissingFilesGraceful(t *testing.T) {
+	api := newMockAPI()
+	api.addProcess(&mockProcess{
+		info: &RawProcessInfo{PID: 4821, BinaryName: "claude"},
+		args: []string{"/usr/local/bin/claude"},
+		env:  map[string]string{"CLAUDE_CODE_ENABLE_TELEMETRY": "1"},
+		cwd:  "/tmp",
+	})
+
+	s := NewScanner(api, 5*time.Second)
+	s.globalConfigPaths = []string{
+		"/nonexistent/user/settings.json",
+		"/nonexistent/managed/settings.json",
+	}
+
+	results := s.Scan()
+	if len(results) != 1 {
+		t.Fatalf("got %d processes, want 1", len(results))
+	}
+
+	p := results[0]
+	if p.EnvVars["CLAUDE_CODE_ENABLE_TELEMETRY"] != "1" {
+		t.Error("process env should still work when config files are missing")
+	}
+}
+
+func TestGlobalConfigMerge_MalformedFilesGraceful(t *testing.T) {
+	badFile := writeTempSettings(t, `{not valid json!!!}`)
+
+	api := newMockAPI()
+	api.addProcess(&mockProcess{
+		info: &RawProcessInfo{PID: 4821, BinaryName: "claude"},
+		args: []string{"/usr/local/bin/claude"},
+		env:  map[string]string{"CLAUDE_CODE_ENABLE_TELEMETRY": "1"},
+		cwd:  "/tmp",
+	})
+
+	s := NewScanner(api, 5*time.Second)
+	s.globalConfigPaths = []string{badFile}
+
+	results := s.Scan()
+	if len(results) != 1 {
+		t.Fatalf("got %d processes, want 1", len(results))
+	}
+
+	p := results[0]
+	if p.EnvVars["CLAUDE_CODE_ENABLE_TELEMETRY"] != "1" {
+		t.Error("process env should still work when config file is malformed")
+	}
+}
+
+func TestGlobalConfigMerge_NoConfigPaths(t *testing.T) {
+	api := newMockAPI()
+	api.addProcess(&mockProcess{
+		info: &RawProcessInfo{PID: 4821, BinaryName: "claude"},
+		args: []string{"/usr/local/bin/claude"},
+		env:  map[string]string{"CLAUDE_CODE_ENABLE_TELEMETRY": "1"},
+		cwd:  "/tmp",
+	})
+
+	s := NewScanner(api, 5*time.Second)
+	// globalConfigPaths is nil (default from NewScanner)
+
+	results := s.Scan()
+	if len(results) != 1 {
+		t.Fatalf("got %d processes, want 1", len(results))
+	}
+
+	p := results[0]
+	if p.EnvVars["CLAUDE_CODE_ENABLE_TELEMETRY"] != "1" {
+		t.Error("scanner should work without global config paths")
+	}
 }

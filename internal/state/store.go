@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -188,12 +187,6 @@ func (ms *MemoryStore) AddEvent(sessionID string, e Event) {
 	if e.Name == "claude_code.api_request" {
 		if model, ok := e.Attributes["model"]; ok && model != "" {
 			s.Model = model
-		}
-		// Update cost from api_request events.
-		if costStr, ok := e.Attributes["cost_usd"]; ok {
-			if cost, err := strconv.ParseFloat(costStr, 64); err == nil {
-				s.TotalCost += cost
-			}
 		}
 	}
 

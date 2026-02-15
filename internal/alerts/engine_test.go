@@ -130,9 +130,9 @@ func TestAlertRunawayTokens_Fires(t *testing.T) {
 
 	rule := newRunawayTokensRule(cfg.Alerts, calc)
 
-	base := time.Now().Add(-6 * time.Minute)
+	base := time.Now().Add(-10 * time.Minute)
 
-	// 1.5M tokens over 5 minutes = 300k tokens/min > 200k threshold.
+	// 1.5M tokens over 5 minutes = 300k tokens/min > 50k threshold.
 	store.AddMetric("sess-1", state.Metric{
 		Name:       "claude_code.token.usage",
 		Value:      0,
@@ -154,13 +154,69 @@ func TestAlertRunawayTokens_Fires(t *testing.T) {
 	})
 	_ = calc.ComputeWithTime(store, base.Add(5*time.Minute))
 
-	now := base.Add(5 * time.Minute)
-	alerts := rule.Evaluate(store, now)
+	// First evaluation: velocity exceeds threshold, records start time but doesn't fire yet.
+	t1 := base.Add(5 * time.Minute)
+	alerts := rule.Evaluate(store, t1)
+	if len(alerts) != 0 {
+		t.Fatalf("expected no alert on first evaluation (sustained check), got %d", len(alerts))
+	}
+
+	// Second evaluation after sustained period (2 minutes later): should fire.
+	t2 := t1.Add(2 * time.Minute)
+	_ = calc.ComputeWithTime(store, t2)
+	alerts = rule.Evaluate(store, t2)
 	if len(alerts) == 0 {
-		t.Fatal("expected RunawayTokens alert to fire")
+		t.Fatal("expected RunawayTokens alert to fire after sustained period")
 	}
 	if alerts[0].Rule != RuleRunawayTokens {
 		t.Errorf("expected rule %s, got %s", RuleRunawayTokens, alerts[0].Rule)
+	}
+}
+
+func TestAlertRunawayTokens_RequiresSustainedDuration(t *testing.T) {
+	store := state.NewMemoryStore()
+	cfg := defaultTestConfig()
+	calc := newTestCalculator()
+
+	rule := newRunawayTokensRule(cfg.Alerts, calc)
+
+	base := time.Now().Add(-10 * time.Minute)
+
+	// Set up high velocity data.
+	store.AddMetric("sess-1", state.Metric{
+		Name:       "claude_code.token.usage",
+		Value:      0,
+		Attributes: map[string]string{"type": "input"},
+		Timestamp:  base,
+	})
+	store.AddMetric("sess-1", state.Metric{
+		Name:      "claude_code.cost.usage",
+		Value:     0.0,
+		Timestamp: base,
+	})
+	_ = calc.ComputeWithTime(store, base)
+
+	store.AddMetric("sess-1", state.Metric{
+		Name:       "claude_code.token.usage",
+		Value:      1500000,
+		Attributes: map[string]string{"type": "input"},
+		Timestamp:  base.Add(5 * time.Minute),
+	})
+	_ = calc.ComputeWithTime(store, base.Add(5*time.Minute))
+
+	// Evaluate immediately: should NOT fire (not sustained yet).
+	t1 := base.Add(5 * time.Minute)
+	alerts := rule.Evaluate(store, t1)
+	if len(alerts) != 0 {
+		t.Fatalf("expected no alert before sustained period, got %d", len(alerts))
+	}
+
+	// Evaluate 1 minute later: still not sustained enough (need 2 min).
+	t2 := t1.Add(1 * time.Minute)
+	_ = calc.ComputeWithTime(store, t2)
+	alerts = rule.Evaluate(store, t2)
+	if len(alerts) != 0 {
+		t.Fatalf("expected no alert at 1 min (need 2 min sustained), got %d", len(alerts))
 	}
 }
 
@@ -195,6 +251,47 @@ func TestAlertLoopDetector_Fires(t *testing.T) {
 	}
 	if alerts[0].SessionID != "sess-1" {
 		t.Errorf("expected session sess-1, got %s", alerts[0].SessionID)
+	}
+}
+
+func TestAlertLoopDetector_NoDuplicateCount(t *testing.T) {
+	store := state.NewMemoryStore()
+	cfg := defaultTestConfig()
+
+	rule := newLoopDetectorRule(cfg.Alerts, defaultNormalizer{})
+
+	now := time.Now()
+
+	// Add 2 failed Bash tool results (below threshold of 3).
+	toolParams, _ := json.Marshal(map[string]any{"bash_command": "npm test"})
+	for i := 0; i < 2; i++ {
+		store.AddEvent("sess-1", state.Event{
+			Name: "claude_code.tool_result",
+			Attributes: map[string]string{
+				"tool_name":       "Bash",
+				"success":         "false",
+				"tool_parameters": string(toolParams),
+			},
+			Timestamp: now.Add(-time.Duration(3-i) * time.Minute),
+		})
+	}
+
+	// First evaluation: 2 failures, below threshold of 3.
+	alerts := rule.Evaluate(store, now)
+	if len(alerts) != 0 {
+		t.Fatalf("expected no alert with 2 failures, got %d", len(alerts))
+	}
+
+	// Second evaluation without new events: should still be 2 (not 4).
+	alerts = rule.Evaluate(store, now)
+	if len(alerts) != 0 {
+		t.Fatalf("expected no alert on re-evaluation (no double-counting), got %d", len(alerts))
+	}
+
+	// Third evaluation: still 2, not 6.
+	alerts = rule.Evaluate(store, now)
+	if len(alerts) != 0 {
+		t.Fatalf("expected no alert on third evaluation (no double-counting), got %d", len(alerts))
 	}
 }
 
@@ -567,6 +664,20 @@ func TestExtractBashCommand(t *testing.T) {
 					tc.input, tc.expected, got)
 			}
 		})
+	}
+}
+
+func TestAlertDefaultThresholds_MatchSpec(t *testing.T) {
+	cfg := defaultTestConfig()
+
+	if cfg.Alerts.CostSurgeThresholdPerHour != 2.00 {
+		t.Errorf("CostSurgeThresholdPerHour: want 2.00, got %f", cfg.Alerts.CostSurgeThresholdPerHour)
+	}
+	if cfg.Alerts.RunawayTokenVelocity != 50000 {
+		t.Errorf("RunawayTokenVelocity: want 50000, got %d", cfg.Alerts.RunawayTokenVelocity)
+	}
+	if cfg.Alerts.RunawayTokenSustainedMinutes != 2 {
+		t.Errorf("RunawayTokenSustainedMinutes: want 2, got %d", cfg.Alerts.RunawayTokenSustainedMinutes)
 	}
 }
 

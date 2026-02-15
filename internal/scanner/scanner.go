@@ -5,8 +5,10 @@
 package scanner
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -50,6 +52,9 @@ type Scanner struct {
 	seen    map[int]bool         // PIDs seen in any previous scan (for IsNew tracking)
 	exited  map[int]*ProcessInfo // exited processes preserved for display
 
+	globalEnv         map[string]string // telemetry env from global config files
+	globalConfigPaths []string          // settings files to check; later overrides earlier
+
 	stopCh chan struct{}
 	done   chan struct{}
 }
@@ -70,7 +75,17 @@ func NewScanner(api ProcessAPI, interval time.Duration) *Scanner {
 // NewDefaultScanner creates a Scanner using the real macOS libproc API
 // and the given scan interval in seconds. This is the production constructor.
 func NewDefaultScanner(intervalSeconds int) *Scanner {
-	return NewScanner(newDarwinProcessAPI(), time.Duration(intervalSeconds)*time.Second)
+	s := NewScanner(newDarwinProcessAPI(), time.Duration(intervalSeconds)*time.Second)
+	home, _ := os.UserHomeDir()
+	if home != "" {
+		s.globalConfigPaths = append(s.globalConfigPaths,
+			filepath.Join(home, ".claude", "settings.json"),
+		)
+	}
+	s.globalConfigPaths = append(s.globalConfigPaths,
+		filepath.Join("/Library", "Application Support", "ClaudeCode", "managed-settings.json"),
+	)
+	return s
 }
 
 // Scan performs a single scan cycle: discovers Claude Code processes,
@@ -144,6 +159,17 @@ func (s *Scanner) Scan() []ProcessInfo {
 				EnvReadable: envReadable,
 			}
 			discovered[pid] = info
+		}
+	}
+
+	// Merge global config env vars into discovered processes.
+	// Process env vars take precedence over global config.
+	s.globalEnv = s.readGlobalTelemetryConfig()
+	for _, info := range discovered {
+		for k, v := range s.globalEnv {
+			if _, has := info.EnvVars[k]; !has {
+				info.EnvVars[k] = v
+			}
 		}
 	}
 
@@ -343,6 +369,54 @@ func shortenHome(path string) string {
 		return "~" + path[len(home):]
 	}
 	return path
+}
+
+// readGlobalTelemetryConfig reads telemetry-related env vars from global
+// Claude Code config files (user settings + managed settings).
+// Files are read in order from s.globalConfigPaths; later files override earlier.
+func (s *Scanner) readGlobalTelemetryConfig() map[string]string {
+	merged := make(map[string]string)
+	for _, path := range s.globalConfigPaths {
+		for k, v := range readSettingsEnv(path) {
+			merged[k] = v
+		}
+	}
+	return merged
+}
+
+// readSettingsEnv reads a Claude Code settings JSON file and extracts
+// telemetry-related environment variables from its "env" block.
+// Returns an empty map if the file is missing, unreadable, or malformed.
+func readSettingsEnv(path string) map[string]string {
+	result := make(map[string]string)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return result
+	}
+
+	var settings struct {
+		Env map[string]string `json:"env"`
+	}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		return result
+	}
+
+	telemetryKeys := map[string]bool{
+		"CLAUDE_CODE_ENABLE_TELEMETRY": true,
+		"OTEL_METRICS_EXPORTER":        true,
+		"OTEL_LOGS_EXPORTER":           true,
+		"OTEL_EXPORTER_OTLP_ENDPOINT":  true,
+		"OTEL_EXPORTER_OTLP_PROTOCOL":  true,
+	}
+
+	for k, v := range settings.Env {
+		if telemetryKeys[k] {
+			result[k] = v
+		}
+	}
+
+	return result
 }
 
 // pgrepClaude uses pgrep to find Claude Code CLI process PIDs as a fallback

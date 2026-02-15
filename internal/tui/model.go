@@ -644,14 +644,24 @@ func (m Model) View() string {
 		return "Shutting down...\n"
 	}
 
+	var output string
 	switch m.view {
 	case ViewStartup:
-		return m.renderStartup()
+		output = m.renderStartup()
 	case ViewDashboard:
-		return m.renderDashboard()
+		output = m.renderDashboard()
 	case ViewStats:
-		return m.renderStats()
+		output = m.renderStats()
 	}
 
-	return ""
+	// Clamp output to terminal height so the header is never pushed off-screen.
+	if m.height > 0 {
+		lines := strings.Split(output, "\n")
+		if len(lines) > m.height {
+			lines = lines[:m.height]
+			output = strings.Join(lines, "\n")
+		}
+	}
+
+	return output
 }

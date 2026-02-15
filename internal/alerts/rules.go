@@ -48,25 +48,37 @@ func (r *costSurgeRule) Evaluate(store state.Store, now time.Time) []Alert {
 // runawayTokensRule fires when token velocity exceeds a threshold for a sustained period.
 type runawayTokensRule struct {
 	velocityThreshold float64
+	sustainedMinutes  int
 	calculator        *burnrate.Calculator
+	exceededSince     map[string]time.Time
 }
 
 func newRunawayTokensRule(cfg config.AlertsConfig, calculator *burnrate.Calculator) *runawayTokensRule {
 	return &runawayTokensRule{
 		velocityThreshold: float64(cfg.RunawayTokenVelocity),
+		sustainedMinutes:  cfg.RunawayTokenSustainedMinutes,
 		calculator:        calculator,
+		exceededSince:     make(map[string]time.Time),
 	}
 }
 
 func (r *runawayTokensRule) Evaluate(store state.Store, now time.Time) []Alert {
 	br := r.calculator.ComputeWithTime(store, now)
+	key := "" // global key
 	if br.TokenVelocity >= r.velocityThreshold {
-		return []Alert{{
-			Rule:     RuleRunawayTokens,
-			Severity: SeverityWarning,
-			Message:  fmt.Sprintf("Runaway tokens: %.0f tokens/min exceeds threshold %.0f", br.TokenVelocity, r.velocityThreshold),
-			FiredAt:  now,
-		}}
+		if _, ok := r.exceededSince[key]; !ok {
+			r.exceededSince[key] = now
+		}
+		if now.Sub(r.exceededSince[key]) >= time.Duration(r.sustainedMinutes)*time.Minute {
+			return []Alert{{
+				Rule:     RuleRunawayTokens,
+				Severity: SeverityWarning,
+				Message:  fmt.Sprintf("Runaway tokens: %.0f tokens/min exceeds threshold %.0f for %d+ min", br.TokenVelocity, r.velocityThreshold, r.sustainedMinutes),
+				FiredAt:  now,
+			}}
+		}
+	} else {
+		delete(r.exceededSince, key)
 	}
 	return nil
 }
@@ -78,16 +90,18 @@ type loopDetectorRule struct {
 	normalizer CommandNormalizer
 
 	// Per-session tracking: sessionID -> commandHash -> []failureTimestamp
-	mu       sync.Mutex
-	failures map[string]map[string][]time.Time
+	mu            sync.Mutex
+	failures      map[string]map[string][]time.Time
+	lastProcessed map[string]int // sessionID -> number of events already processed
 }
 
 func newLoopDetectorRule(cfg config.AlertsConfig, normalizer CommandNormalizer) *loopDetectorRule {
 	return &loopDetectorRule{
-		threshold:  cfg.LoopDetectorThreshold,
-		windowMins: cfg.LoopDetectorWindowMinutes,
-		normalizer: normalizer,
-		failures:   make(map[string]map[string][]time.Time),
+		threshold:     cfg.LoopDetectorThreshold,
+		windowMins:    cfg.LoopDetectorWindowMinutes,
+		normalizer:    normalizer,
+		failures:      make(map[string]map[string][]time.Time),
+		lastProcessed: make(map[string]int),
 	}
 }
 
@@ -99,7 +113,12 @@ func (r *loopDetectorRule) Evaluate(store state.Store, now time.Time) []Alert {
 	var alerts []Alert
 
 	for _, session := range store.ListSessions() {
-		for _, evt := range session.Events {
+		// Only process new events since last evaluation.
+		start := r.lastProcessed[session.SessionID]
+		events := session.Events
+
+		for i := start; i < len(events); i++ {
+			evt := events[i]
 			if evt.Name != "claude_code.tool_result" {
 				continue
 			}
@@ -129,6 +148,8 @@ func (r *loopDetectorRule) Evaluate(store state.Store, now time.Time) []Alert {
 			r.failures[session.SessionID][hash] = append(
 				r.failures[session.SessionID][hash], evt.Timestamp)
 		}
+
+		r.lastProcessed[session.SessionID] = len(events)
 
 		// Check for threshold breaches within the window.
 		if sessionFailures, ok := r.failures[session.SessionID]; ok {

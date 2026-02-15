@@ -60,12 +60,12 @@ func DefaultKeyMap() KeyMap {
 			key.WithHelp("ctrl+k", "kill switch"),
 		),
 		ScrollUp: key.NewBinding(
-			key.WithKeys("k"),
-			key.WithHelp("k", "scroll up"),
+			key.WithKeys("pgup", "K"),
+			key.WithHelp("pgup/K", "scroll up"),
 		),
 		ScrollDown: key.NewBinding(
-			key.WithKeys("j"),
-			key.WithHelp("j", "scroll down"),
+			key.WithKeys("pgdown", "J"),
+			key.WithHelp("pgdn/J", "scroll down"),
 		),
 		Enable: key.NewBinding(
 			key.WithKeys("e", "E"),

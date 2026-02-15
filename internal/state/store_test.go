@@ -78,6 +78,34 @@ func TestStateStore_IndexEventBySessionID(t *testing.T) {
 	}
 }
 
+func TestStateStore_EventDoesNotAccumulateCost(t *testing.T) {
+	store := NewMemoryStore()
+
+	// Add an api_request event with cost_usd attribute.
+	e := Event{
+		Name: "claude_code.api_request",
+		Attributes: map[string]string{
+			"model":    "sonnet-4.5",
+			"cost_usd": "0.05",
+		},
+		Timestamp: time.Now(),
+	}
+	store.AddEvent("sess-cost", e)
+
+	s := store.GetSession("sess-cost")
+	if s == nil {
+		t.Fatal("expected session to exist")
+	}
+	// Events must NOT accumulate cost — cost comes only from metrics.
+	if s.TotalCost != 0.0 {
+		t.Errorf("expected TotalCost=0.0 (events should not add cost), got %f", s.TotalCost)
+	}
+	// Model extraction should still work.
+	if s.Model != "sonnet-4.5" {
+		t.Errorf("expected Model='sonnet-4.5', got %q", s.Model)
+	}
+}
+
 func TestStateStore_MissingSessID(t *testing.T) {
 	store := NewMemoryStore()
 

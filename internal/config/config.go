@@ -41,7 +41,8 @@ type ScannerConfig struct {
 // AlertsConfig configures alert thresholds and notification behaviour.
 type AlertsConfig struct {
 	CostSurgeThresholdPerHour float64            `toml:"cost_surge_threshold_per_hour"`
-	RunawayTokenVelocity      int                `toml:"runaway_token_velocity"`
+	RunawayTokenVelocity         int                `toml:"runaway_token_velocity"`
+	RunawayTokenSustainedMinutes int                `toml:"runaway_token_sustained_minutes"`
 	LoopDetectorThreshold     int                `toml:"loop_detector_threshold"`
 	LoopDetectorWindowMinutes int                `toml:"loop_detector_window_minutes"`
 	ErrorStormCount           int                `toml:"error_storm_count"`
@@ -190,6 +191,9 @@ func mergeFromRaw(cfg *Config, tf *tomlFile, raw map[string]any) {
 			}
 			if _, exists := section["runaway_token_velocity"]; exists {
 				cfg.Alerts.RunawayTokenVelocity = tf.Alerts.RunawayTokenVelocity
+			}
+			if _, exists := section["runaway_token_sustained_minutes"]; exists {
+				cfg.Alerts.RunawayTokenSustainedMinutes = tf.Alerts.RunawayTokenSustainedMinutes
 			}
 			if _, exists := section["loop_detector_threshold"]; exists {
 				cfg.Alerts.LoopDetectorThreshold = tf.Alerts.LoopDetectorThreshold
@@ -361,6 +365,9 @@ func validate(cfg *Config) error {
 	}
 	if cfg.Alerts.RunawayTokenVelocity < 1 {
 		errs = append(errs, fmt.Sprintf("runaway_token_velocity must be positive, got %d", cfg.Alerts.RunawayTokenVelocity))
+	}
+	if cfg.Alerts.RunawayTokenSustainedMinutes < 1 {
+		errs = append(errs, fmt.Sprintf("runaway_token_sustained_minutes must be positive, got %d", cfg.Alerts.RunawayTokenSustainedMinutes))
 	}
 	if cfg.Alerts.LoopDetectorThreshold < 1 {
 		errs = append(errs, fmt.Sprintf("loop_detector_threshold must be positive, got %d", cfg.Alerts.LoopDetectorThreshold))

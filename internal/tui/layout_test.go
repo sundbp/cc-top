@@ -1076,6 +1076,51 @@ func TestStripAnsi(t *testing.T) {
 	}
 }
 
+// TestModel_ViewClampedToTerminalHeight verifies that View() output never
+// exceeds m.height lines, ensuring the header is never pushed off-screen
+// when the terminal is resized small.
+func TestModel_ViewClampedToTerminalHeight(t *testing.T) {
+	cfg := config.DefaultConfig()
+	mockAlerts := &mockAlertProvider{
+		alerts: []alerts.Alert{
+			{Rule: "CostSurge", Severity: "critical", Message: "test alert", SessionID: "s1", FiredAt: time.Now()},
+		},
+	}
+
+	sizes := []struct {
+		name   string
+		width  int
+		height int
+	}{
+		{"small_15", 80, 15},
+		{"small_12", 80, 12},
+		{"minimum_10", 40, 10},
+	}
+
+	for _, sz := range sizes {
+		t.Run(sz.name, func(t *testing.T) {
+			m := NewModel(cfg,
+				WithStartView(ViewDashboard),
+				WithAlertProvider(mockAlerts),
+				WithStateProvider(&mockStateProvider{}),
+			)
+			m.width = sz.width
+			m.height = sz.height
+
+			view := m.View()
+			lines := strings.Split(view, "\n")
+			if len(lines) > sz.height {
+				t.Errorf("View() output has %d lines, want at most %d", len(lines), sz.height)
+			}
+
+			// Header should always be on the first line.
+			if len(lines) > 0 && !strings.Contains(lines[0], "cc-top") {
+				t.Errorf("first line = %q, want to contain 'cc-top'", lines[0])
+			}
+		})
+	}
+}
+
 func TestModel_RenderWithFocusedPanels(t *testing.T) {
 	cfg := config.DefaultConfig()
 	boolTrue := true

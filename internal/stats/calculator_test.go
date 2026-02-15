@@ -473,6 +473,195 @@ func TestStatsCalc_EmptySessions(t *testing.T) {
 	}
 }
 
+func TestStatsCalc_LinesOfCode_CumulativeCounter(t *testing.T) {
+	// Cumulative counters report running totals. If a session reports
+	// values 10, 30, 50 over time for "added", only the latest (50)
+	// should be used, not the sum (90).
+	sessions := []state.SessionData{
+		{
+			SessionID: "sess-001",
+			Metrics: []state.Metric{
+				{
+					Name:       "claude_code.lines_of_code.count",
+					Value:      10,
+					Attributes: map[string]string{"type": "added"},
+				},
+				{
+					Name:       "claude_code.lines_of_code.count",
+					Value:      30,
+					Attributes: map[string]string{"type": "added"},
+				},
+				{
+					Name:       "claude_code.lines_of_code.count",
+					Value:      50,
+					Attributes: map[string]string{"type": "added"},
+				},
+				{
+					Name:       "claude_code.lines_of_code.count",
+					Value:      5,
+					Attributes: map[string]string{"type": "removed"},
+				},
+				{
+					Name:       "claude_code.lines_of_code.count",
+					Value:      15,
+					Attributes: map[string]string{"type": "removed"},
+				},
+			},
+		},
+		{
+			SessionID: "sess-002",
+			Metrics: []state.Metric{
+				{
+					Name:       "claude_code.lines_of_code.count",
+					Value:      1,
+					Attributes: map[string]string{"type": "added"},
+				},
+				{
+					Name:       "claude_code.lines_of_code.count",
+					Value:      2,
+					Attributes: map[string]string{"type": "added"},
+				},
+				{
+					Name:       "claude_code.lines_of_code.count",
+					Value:      3,
+					Attributes: map[string]string{"type": "added"},
+				},
+			},
+		},
+	}
+
+	calc := NewCalculator()
+	stats := calc.Compute(sessions)
+
+	// sess-001: latest added=50, latest removed=15
+	// sess-002: latest added=3, removed=0
+	// Total: added=53, removed=15
+	if stats.LinesAdded != 53 {
+		t.Errorf("expected LinesAdded=53, got %d", stats.LinesAdded)
+	}
+	if stats.LinesRemoved != 15 {
+		t.Errorf("expected LinesRemoved=15, got %d", stats.LinesRemoved)
+	}
+}
+
+func TestStatsCalc_CommitsAndPRs_CumulativeCounter(t *testing.T) {
+	// Multiple cumulative data points: 1, 2, 3 should yield 3, not 6.
+	sessions := []state.SessionData{
+		{
+			SessionID: "sess-001",
+			Metrics: []state.Metric{
+				{Name: "claude_code.commit.count", Value: 1},
+				{Name: "claude_code.commit.count", Value: 2},
+				{Name: "claude_code.commit.count", Value: 3},
+				{Name: "claude_code.pull_request.count", Value: 1},
+			},
+		},
+		{
+			SessionID: "sess-002",
+			Metrics: []state.Metric{
+				{Name: "claude_code.commit.count", Value: 5},
+				{Name: "claude_code.commit.count", Value: 7},
+				{Name: "claude_code.pull_request.count", Value: 1},
+				{Name: "claude_code.pull_request.count", Value: 2},
+			},
+		},
+	}
+
+	calc := NewCalculator()
+	stats := calc.Compute(sessions)
+
+	// sess-001: latest commit=3, latest PR=1
+	// sess-002: latest commit=7, latest PR=2
+	// Total: commits=10, PRs=3
+	if stats.Commits != 10 {
+		t.Errorf("expected Commits=10, got %d", stats.Commits)
+	}
+	if stats.PRs != 3 {
+		t.Errorf("expected PRs=3, got %d", stats.PRs)
+	}
+}
+
+func TestStatsCalc_CacheEfficiency_CumulativeCounter(t *testing.T) {
+	// Multiple cumulative data points per session+type: use latest only.
+	sessions := []state.SessionData{
+		{
+			SessionID: "sess-001",
+			Metrics: []state.Metric{
+				{
+					Name:       "claude_code.token.usage",
+					Value:      10000,
+					Attributes: map[string]string{"type": "cacheRead"},
+				},
+				{
+					Name:       "claude_code.token.usage",
+					Value:      5000,
+					Attributes: map[string]string{"type": "input"},
+				},
+				{
+					Name:       "claude_code.token.usage",
+					Value:      80000,
+					Attributes: map[string]string{"type": "cacheRead"},
+				},
+				{
+					Name:       "claude_code.token.usage",
+					Value:      20000,
+					Attributes: map[string]string{"type": "input"},
+				},
+			},
+		},
+	}
+
+	calc := NewCalculator()
+	stats := calc.Compute(sessions)
+
+	// Latest cacheRead=80000, latest input=20000
+	// Efficiency = 80000 / (20000 + 80000) = 0.80
+	if math.Abs(stats.CacheEfficiency-0.80) > 0.001 {
+		t.Errorf("expected CacheEfficiency=0.80, got %f", stats.CacheEfficiency)
+	}
+}
+
+func TestStatsCalc_ToolAcceptance_CumulativeCounter(t *testing.T) {
+	// Multiple cumulative data points per session+tool+decision: use latest only.
+	sessions := []state.SessionData{
+		{
+			SessionID: "sess-001",
+			Metrics: []state.Metric{
+				{
+					Name:       "claude_code.code_edit_tool.decision",
+					Value:      2,
+					Attributes: map[string]string{"tool": "Edit", "decision": "accept"},
+				},
+				{
+					Name:       "claude_code.code_edit_tool.decision",
+					Value:      1,
+					Attributes: map[string]string{"tool": "Edit", "decision": "reject"},
+				},
+				// Later cumulative update: accept grew to 8, reject grew to 2.
+				{
+					Name:       "claude_code.code_edit_tool.decision",
+					Value:      8,
+					Attributes: map[string]string{"tool": "Edit", "decision": "accept"},
+				},
+				{
+					Name:       "claude_code.code_edit_tool.decision",
+					Value:      2,
+					Attributes: map[string]string{"tool": "Edit", "decision": "reject"},
+				},
+			},
+		},
+	}
+
+	calc := NewCalculator()
+	stats := calc.Compute(sessions)
+
+	// Latest accept=8, latest reject=2, total=10
+	// Rate = 8/10 = 0.80
+	if math.Abs(stats.ToolAcceptance["Edit"]-0.80) > 0.001 {
+		t.Errorf("expected Edit acceptance=0.80, got %f", stats.ToolAcceptance["Edit"])
+	}
+}
+
 // makeAPIEvents creates N api_request events and M api_error events.
 func makeAPIEvents(requests, errors int) []state.Event {
 	events := make([]state.Event, 0, requests+errors)
