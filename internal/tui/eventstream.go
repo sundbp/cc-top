@@ -119,8 +119,12 @@ func (m Model) renderEventStreamPanel(w, h int) string {
 
 	// Scroll indicator.
 	if len(evts) > visibleLines {
+		pad := contentW - 20
+		if pad < 0 {
+			pad = 0
+		}
 		scrollInfo := dimStyle.Render(
-			strings.Repeat(" ", contentW-20) +
+			strings.Repeat(" ", pad) +
 				formatScrollPos(startIdx+1, endIdx, len(evts)))
 		lines = append(lines, scrollInfo)
 	}
