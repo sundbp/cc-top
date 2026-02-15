@@ -114,7 +114,7 @@ func (r *HTTPReceiver) handleLogs(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	r.processLogExport(exportReq, sourcePort)
+	processLogExport(r.store, r.portMapper, exportReq, sourcePort)
 
 	// Return success response.
 	w.Header().Set("Content-Type", "application/json")
@@ -187,47 +187,6 @@ func decodeLogsJSON(body []byte, out *collogspb.ExportLogsServiceRequest) error 
 	return nil
 }
 
-// processLogExport extracts events from the OTLP log export and stores them.
-func (r *HTTPReceiver) processLogExport(req *collogspb.ExportLogsServiceRequest, sourcePort int) {
-	for _, rl := range req.GetResourceLogs() {
-		resource := rl.GetResource()
-
-		for _, sl := range rl.GetScopeLogs() {
-			for _, lr := range sl.GetLogRecords() {
-				sessionID := extractSessionID(resource, lr.GetAttributes())
-
-				// Record source port for PID correlation.
-				if r.portMapper != nil && sessionID != "" && sourcePort > 0 {
-					r.portMapper.RecordSourcePort(sourcePort, sessionID)
-				}
-
-				ts := time.Unix(0, int64(lr.GetTimeUnixNano()))
-				if lr.GetTimeUnixNano() == 0 {
-					ts = time.Now()
-				}
-
-				// Determine event name: prefer EventName field, fall back to body string.
-				eventName := lr.GetEventName()
-				if eventName == "" && lr.GetBody() != nil {
-					if sv, ok := lr.GetBody().GetValue().(*commonpb.AnyValue_StringValue); ok {
-						eventName = sv.StringValue
-					}
-				}
-
-				attrs := kvToMap(lr.GetAttributes())
-
-				evt := state.Event{
-					Name:       eventName,
-					Attributes: attrs,
-					Timestamp:  ts,
-				}
-
-				r.store.AddEvent(sessionID, evt)
-			}
-		}
-	}
-}
-
 // Addr returns the listener's network address, or nil if not started.
 // This is primarily useful for testing with ephemeral ports.
 func (r *HTTPReceiver) Addr() net.Addr {
@@ -253,8 +212,8 @@ type jsonExportLogsRequest struct {
 }
 
 type jsonResourceLogs struct {
-	Resource  *jsonResource    `json:"resource"`
-	ScopeLogs []jsonScopeLogs  `json:"scopeLogs"`
+	Resource  *jsonResource   `json:"resource"`
+	ScopeLogs []jsonScopeLogs `json:"scopeLogs"`
 }
 
 type jsonResource struct {
@@ -273,8 +232,8 @@ type jsonLogRecord struct {
 }
 
 type jsonKeyValue struct {
-	Key   string        `json:"key"`
-	Value jsonAnyValue  `json:"value"`
+	Key   string       `json:"key"`
+	Value jsonAnyValue `json:"value"`
 }
 
 type jsonAnyValue struct {

@@ -9,6 +9,7 @@ import (
 	"github.com/nixlim/cc-top/internal/config"
 	"github.com/nixlim/cc-top/internal/state"
 
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -16,9 +17,10 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// GRPCReceiver listens for OTLP metrics via gRPC on the configured port.
-// It implements the MetricsServiceServer interface from the OTLP proto
-// definitions and captures inbound source ports for PID correlation.
+// GRPCReceiver listens for OTLP metrics and log events via gRPC on the configured port.
+// It implements MetricsServiceServer for metrics. Log events are handled by an internal
+// grpcLogsHandler that implements LogsServiceServer separately, since both interfaces
+// define an Export method with different signatures.
 type GRPCReceiver struct {
 	colmetricspb.UnimplementedMetricsServiceServer
 
@@ -27,6 +29,16 @@ type GRPCReceiver struct {
 	portMapper PortMapper
 	server     *grpc.Server
 	listener   net.Listener
+}
+
+// grpcLogsHandler implements LogsServiceServer for the gRPC receiver.
+// It is a separate type because LogsServiceServer.Export and MetricsServiceServer.Export
+// have conflicting signatures and cannot coexist on the same struct.
+type grpcLogsHandler struct {
+	collogspb.UnimplementedLogsServiceServer
+
+	store      state.Store
+	portMapper PortMapper
 }
 
 // NewGRPCReceiver creates a new gRPC-based OTLP metrics receiver.
@@ -51,6 +63,10 @@ func (r *GRPCReceiver) Start(ctx context.Context) error {
 
 	r.server = grpc.NewServer()
 	colmetricspb.RegisterMetricsServiceServer(r.server, r)
+	collogspb.RegisterLogsServiceServer(r.server, &grpcLogsHandler{
+		store:      r.store,
+		portMapper: r.portMapper,
+	})
 
 	log.Printf("OTLP gRPC receiver listening on %s", addr)
 
@@ -96,6 +112,25 @@ func (r *GRPCReceiver) Export(ctx context.Context, req *colmetricspb.ExportMetri
 	}
 
 	return &colmetricspb.ExportMetricsServiceResponse{}, nil
+}
+
+// Export handles incoming ExportLogsServiceRequest RPCs. It extracts
+// session.id from resource and log record attributes, stores the events in the
+// state store, and records the inbound source port for PID correlation.
+func (h *grpcLogsHandler) Export(ctx context.Context, req *collogspb.ExportLogsServiceRequest) (*collogspb.ExportLogsServiceResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "empty request")
+	}
+
+	// Extract source port from the peer address for PID correlation.
+	sourcePort := 0
+	if p, ok := peer.FromContext(ctx); ok && p.Addr != nil {
+		sourcePort = sourcePortFromAddr(p.Addr)
+	}
+
+	processLogExport(h.store, h.portMapper, req, sourcePort)
+
+	return &collogspb.ExportLogsServiceResponse{}, nil
 }
 
 // Addr returns the listener's network address, or nil if not started.

@@ -10,8 +10,10 @@ import (
 	"github.com/nixlim/cc-top/internal/config"
 	"github.com/nixlim/cc-top/internal/state"
 
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
+	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	"google.golang.org/grpc"
@@ -31,9 +33,15 @@ func (m *testPortMapper) RecordSourcePort(sourcePort int, sessionID string) {
 	m.mappings[sourcePort] = sessionID
 }
 
+// grpcTestClients holds both metric and log gRPC clients for testing.
+type grpcTestClients struct {
+	metrics colmetricspb.MetricsServiceClient
+	logs    collogspb.LogsServiceClient
+}
+
 // startTestGRPC creates a gRPC receiver on an ephemeral port and returns
-// the receiver, a connected client, and the client connection for cleanup.
-func startTestGRPC(t *testing.T, store state.Store, pm PortMapper) (*GRPCReceiver, colmetricspb.MetricsServiceClient, *grpc.ClientConn) {
+// the receiver, connected clients (metrics + logs), and the client connection for cleanup.
+func startTestGRPC(t *testing.T, store state.Store, pm PortMapper) (*GRPCReceiver, grpcTestClients, *grpc.ClientConn) {
 	t.Helper()
 
 	cfg := config.ReceiverConfig{
@@ -52,6 +60,10 @@ func startTestGRPC(t *testing.T, store state.Store, pm PortMapper) (*GRPCReceive
 
 	r.server = grpc.NewServer()
 	colmetricspb.RegisterMetricsServiceServer(r.server, r)
+	collogspb.RegisterLogsServiceServer(r.server, &grpcLogsHandler{
+		store:      r.store,
+		portMapper: r.portMapper,
+	})
 
 	go func() {
 		_ = r.server.Serve(lis)
@@ -70,8 +82,11 @@ func startTestGRPC(t *testing.T, store state.Store, pm PortMapper) (*GRPCReceive
 		t.Fatalf("failed to connect gRPC client: %v", err)
 	}
 
-	client := colmetricspb.NewMetricsServiceClient(conn)
-	return r, client, conn
+	clients := grpcTestClients{
+		metrics: colmetricspb.NewMetricsServiceClient(conn),
+		logs:    collogspb.NewLogsServiceClient(conn),
+	}
+	return r, clients, conn
 }
 
 // makeCostMetricRequest creates an ExportMetricsServiceRequest with a
@@ -128,7 +143,7 @@ func makeCostMetricRequest(sessionID string, value float64) *colmetricspb.Export
 func TestOTLPReceiver_GRPCMetrics(t *testing.T) {
 	store := state.NewMemoryStore()
 	pm := newTestPortMapper()
-	r, client, conn := startTestGRPC(t, store, pm)
+	r, clients, conn := startTestGRPC(t, store, pm)
 	defer func() {
 		conn.Close()
 		r.Stop()
@@ -138,7 +153,7 @@ func TestOTLPReceiver_GRPCMetrics(t *testing.T) {
 
 	// Send a cost metric for session "sess-001".
 	req := makeCostMetricRequest("sess-001", 0.50)
-	resp, err := client.Export(ctx, req)
+	resp, err := clients.metrics.Export(ctx, req)
 	if err != nil {
 		t.Fatalf("Export failed: %v", err)
 	}
@@ -163,7 +178,7 @@ func TestOTLPReceiver_GRPCMetrics(t *testing.T) {
 
 	// Send a second metric with higher cumulative value.
 	req2 := makeCostMetricRequest("sess-001", 1.25)
-	_, err = client.Export(ctx, req2)
+	_, err = clients.metrics.Export(ctx, req2)
 	if err != nil {
 		t.Fatalf("second Export failed: %v", err)
 	}
@@ -193,9 +208,196 @@ func TestOTLPReceiver_GRPCMetrics(t *testing.T) {
 	}
 }
 
+func TestOTLPReceiver_GRPCLogs(t *testing.T) {
+	store := state.NewMemoryStore()
+	pm := newTestPortMapper()
+	r, clients, conn := startTestGRPC(t, store, pm)
+	defer func() {
+		conn.Close()
+		r.Stop()
+	}()
+
+	ctx := context.Background()
+
+	// Send an api_request event via gRPC logs.
+	ts := uint64(time.Now().UnixNano())
+	req := &collogspb.ExportLogsServiceRequest{
+		ResourceLogs: []*logspb.ResourceLogs{
+			{
+				Resource: &resourcepb.Resource{
+					Attributes: []*commonpb.KeyValue{
+						{
+							Key:   "session.id",
+							Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "sess-grpc-logs-001"}},
+						},
+					},
+				},
+				ScopeLogs: []*logspb.ScopeLogs{
+					{
+						LogRecords: []*logspb.LogRecord{
+							{
+								TimeUnixNano: ts,
+								EventName:    "claude_code.api_request",
+								Attributes: []*commonpb.KeyValue{
+									{Key: "model", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "claude-sonnet-4-5-20250929"}}},
+									{Key: "cost_usd", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "0.07"}}},
+									{Key: "input_tokens", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 2000}}},
+									{Key: "output_tokens", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 500}}},
+									{Key: "duration_ms", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_IntValue{IntValue: 3200}}},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	resp, err := clients.logs.Export(ctx, req)
+	if err != nil {
+		t.Fatalf("gRPC logs Export failed: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response")
+	}
+
+	// Verify the event was stored.
+	session := store.GetSession("sess-grpc-logs-001")
+	if session == nil {
+		t.Fatal("expected session sess-grpc-logs-001 to exist")
+	}
+	if len(session.Events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(session.Events))
+	}
+	if session.Events[0].Name != "claude_code.api_request" {
+		t.Errorf("expected event name 'claude_code.api_request', got %q", session.Events[0].Name)
+	}
+	if session.Events[0].Attributes["model"] != "claude-sonnet-4-5-20250929" {
+		t.Errorf("expected model attribute 'claude-sonnet-4-5-20250929', got %q", session.Events[0].Attributes["model"])
+	}
+
+	// Verify source port mapping was recorded.
+	found := false
+	for _, sid := range pm.mappings {
+		if sid == "sess-grpc-logs-001" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected source port mapped to sess-grpc-logs-001")
+	}
+}
+
+func TestOTLPReceiver_GRPCLogs_MultipleEventTypes(t *testing.T) {
+	store := state.NewMemoryStore()
+	r, clients, conn := startTestGRPC(t, store, nil)
+	defer func() {
+		conn.Close()
+		r.Stop()
+	}()
+
+	ctx := context.Background()
+	ts := uint64(time.Now().UnixNano())
+
+	// Send multiple event types in a single request.
+	req := &collogspb.ExportLogsServiceRequest{
+		ResourceLogs: []*logspb.ResourceLogs{
+			{
+				Resource: &resourcepb.Resource{
+					Attributes: []*commonpb.KeyValue{
+						{
+							Key:   "session.id",
+							Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "sess-multi"}},
+						},
+					},
+				},
+				ScopeLogs: []*logspb.ScopeLogs{
+					{
+						LogRecords: []*logspb.LogRecord{
+							{
+								TimeUnixNano: ts,
+								EventName:    "claude_code.user_prompt",
+								Attributes: []*commonpb.KeyValue{
+									{Key: "prompt_length", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "42"}}},
+								},
+							},
+							{
+								TimeUnixNano: ts + 1000,
+								EventName:    "claude_code.tool_result",
+								Attributes: []*commonpb.KeyValue{
+									{Key: "tool_name", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "Read"}}},
+									{Key: "success", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "true"}}},
+									{Key: "duration_ms", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "150"}}},
+								},
+							},
+							{
+								TimeUnixNano: ts + 2000,
+								EventName:    "claude_code.api_error",
+								Attributes: []*commonpb.KeyValue{
+									{Key: "status_code", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "529"}}},
+									{Key: "error", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "overloaded"}}},
+									{Key: "attempt", Value: &commonpb.AnyValue{Value: &commonpb.AnyValue_StringValue{StringValue: "1"}}},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	_, err := clients.logs.Export(ctx, req)
+	if err != nil {
+		t.Fatalf("gRPC logs Export failed: %v", err)
+	}
+
+	session := store.GetSession("sess-multi")
+	if session == nil {
+		t.Fatal("expected session sess-multi to exist")
+	}
+	if len(session.Events) != 3 {
+		t.Fatalf("expected 3 events, got %d", len(session.Events))
+	}
+
+	// Verify event ordering and names.
+	expectedNames := []string{"claude_code.user_prompt", "claude_code.tool_result", "claude_code.api_error"}
+	for i, name := range expectedNames {
+		if session.Events[i].Name != name {
+			t.Errorf("event[%d]: expected name %q, got %q", i, name, session.Events[i].Name)
+		}
+	}
+}
+
+func TestOTLPReceiver_GRPCLogs_EmptyRequest(t *testing.T) {
+	store := state.NewMemoryStore()
+	r, clients, conn := startTestGRPC(t, store, nil)
+	defer func() {
+		conn.Close()
+		r.Stop()
+	}()
+
+	ctx := context.Background()
+
+	// Empty request should succeed without storing anything.
+	resp, err := clients.logs.Export(ctx, &collogspb.ExportLogsServiceRequest{})
+	if err != nil {
+		t.Fatalf("empty logs request should succeed: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("expected non-nil response for empty logs request")
+	}
+
+	// No sessions should have been created.
+	sessions := store.ListSessions()
+	if len(sessions) != 0 {
+		t.Errorf("expected 0 sessions after empty request, got %d", len(sessions))
+	}
+}
+
 func TestOTLPReceiver_MalformedPayload(t *testing.T) {
 	store := state.NewMemoryStore()
-	r, client, conn := startTestGRPC(t, store, nil)
+	r, clients, conn := startTestGRPC(t, store, nil)
 	defer func() {
 		conn.Close()
 		r.Stop()
@@ -206,7 +408,7 @@ func TestOTLPReceiver_MalformedPayload(t *testing.T) {
 	// Send a nil request. The gRPC framework handles complete garbage at the
 	// protobuf level, so we test with an empty request which our handler
 	// should handle gracefully.
-	resp, err := client.Export(ctx, &colmetricspb.ExportMetricsServiceRequest{})
+	resp, err := clients.metrics.Export(ctx, &colmetricspb.ExportMetricsServiceRequest{})
 	if err != nil {
 		t.Fatalf("empty request should succeed: %v", err)
 	}
@@ -216,7 +418,7 @@ func TestOTLPReceiver_MalformedPayload(t *testing.T) {
 
 	// Server should still be operational after the empty request.
 	req := makeCostMetricRequest("sess-002", 0.10)
-	resp, err = client.Export(ctx, req)
+	resp, err = clients.metrics.Export(ctx, req)
 	if err != nil {
 		t.Fatalf("Export after empty request failed: %v", err)
 	}

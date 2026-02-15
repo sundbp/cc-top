@@ -17,6 +17,7 @@ import (
 	"github.com/nixlim/cc-top/internal/config"
 	"github.com/nixlim/cc-top/internal/state"
 
+	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	metricspb "go.opentelemetry.io/proto/otlp/metrics/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
@@ -183,6 +184,48 @@ func sourcePortFromAddr(addr net.Addr) int {
 		return 0
 	}
 	return port
+}
+
+// processLogExport extracts events from an OTLP log export request and stores them.
+// This is a shared function used by both gRPC and HTTP log receivers.
+func processLogExport(store state.Store, portMapper PortMapper, req *collogspb.ExportLogsServiceRequest, sourcePort int) {
+	for _, rl := range req.GetResourceLogs() {
+		resource := rl.GetResource()
+
+		for _, sl := range rl.GetScopeLogs() {
+			for _, lr := range sl.GetLogRecords() {
+				sessionID := extractSessionID(resource, lr.GetAttributes())
+
+				// Record source port for PID correlation.
+				if portMapper != nil && sessionID != "" && sourcePort > 0 {
+					portMapper.RecordSourcePort(sourcePort, sessionID)
+				}
+
+				ts := time.Unix(0, int64(lr.GetTimeUnixNano()))
+				if lr.GetTimeUnixNano() == 0 {
+					ts = time.Now()
+				}
+
+				// Determine event name: prefer EventName field, fall back to body string.
+				eventName := lr.GetEventName()
+				if eventName == "" && lr.GetBody() != nil {
+					if sv, ok := lr.GetBody().GetValue().(*commonpb.AnyValue_StringValue); ok {
+						eventName = sv.StringValue
+					}
+				}
+
+				attrs := kvToMap(lr.GetAttributes())
+
+				evt := state.Event{
+					Name:       eventName,
+					Attributes: attrs,
+					Timestamp:  ts,
+				}
+
+				store.AddEvent(sessionID, evt)
+			}
+		}
+	}
 }
 
 // logReceiveError logs a receive error at warning level.
