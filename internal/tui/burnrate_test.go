@@ -169,7 +169,8 @@ func TestRenderBurnRatePanel_SessionAware(t *testing.T) {
 	m.width = 120
 	m.height = 40
 
-	// Global view.
+	// Global view: computeBurnRate populates the cache, getBurnRate reads it.
+	m.cachedBurnRate = m.computeBurnRate()
 	br := m.getBurnRate()
 	if br.TotalCost != 10.00 {
 		t.Errorf("global burn rate TotalCost = %.2f, want 10.00", br.TotalCost)
@@ -177,6 +178,7 @@ func TestRenderBurnRatePanel_SessionAware(t *testing.T) {
 
 	// Session-specific view.
 	m.selectedSession = "sess-001"
+	m.cachedBurnRate = m.computeBurnRate()
 	br = m.getBurnRate()
 	if br.TotalCost != 5.00 {
 		t.Errorf("session burn rate TotalCost = %.2f, want 5.00", br.TotalCost)

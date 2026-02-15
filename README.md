@@ -75,13 +75,23 @@ cc-top starts with a **startup screen** showing all detected Claude Code process
 | Key | Action |
 |-----|--------|
 | `Tab` | Toggle between dashboard and stats view |
-| `Up/Down` | Navigate session list |
+| `Up`/`k` | Navigate up / scroll event stream up |
+| `Down`/`j` | Navigate down / scroll event stream down |
 | `Enter` | Select session (filter panels to that session) |
 | `Esc` | Return to global view |
-| `j/k` | Scroll event stream |
 | `f` | Open event filter menu |
-| `Ctrl+K` | Kill switch (pause/terminate a session) |
+| `Ctrl+K` | Kill switch -- pauses the session (SIGSTOP) and opens confirmation |
 | `q` | Quit |
+
+### Kill switch confirmation
+
+When the kill switch is activated, the target session is paused and a confirmation dialog appears:
+
+| Key | Action |
+|-----|--------|
+| `Y` | Confirm -- terminates the session (SIGKILL) |
+| `N` | Cancel -- resumes the session (SIGCONT) |
+| `Esc` | Cancel -- resumes the session (SIGCONT) |
 
 ## Configuration
 

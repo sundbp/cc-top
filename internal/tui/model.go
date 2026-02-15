@@ -120,6 +120,9 @@ type Model struct {
 	killTargetPID  int
 	killTargetInfo string
 
+	// Cached burn rate (updated on tick, not on every render).
+	cachedBurnRate burnrate.BurnRate
+
 	// Alert scroll state.
 	alertScrollPos int
 
@@ -223,6 +226,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
+		// Refresh cached burn rate on tick (not on every render).
+		m.cachedBurnRate = m.computeBurnRate()
 		return m, m.tickCmd()
 
 	case tea.KeyMsg:

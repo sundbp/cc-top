@@ -27,11 +27,11 @@ func TestConfigParser_Defaults(t *testing.T) {
 	if cfg.Scanner.IntervalSeconds != 5 {
 		t.Errorf("default interval_seconds: want 5, got %d", cfg.Scanner.IntervalSeconds)
 	}
-	if cfg.Alerts.CostSurgeThresholdPerHour != 2.00 {
-		t.Errorf("default cost_surge_threshold_per_hour: want 2.00, got %f", cfg.Alerts.CostSurgeThresholdPerHour)
+	if cfg.Alerts.CostSurgeThresholdPerHour != 100.00 {
+		t.Errorf("default cost_surge_threshold_per_hour: want 100.00, got %f", cfg.Alerts.CostSurgeThresholdPerHour)
 	}
-	if cfg.Alerts.RunawayTokenVelocity != 50000 {
-		t.Errorf("default runaway_token_velocity: want 50000, got %d", cfg.Alerts.RunawayTokenVelocity)
+	if cfg.Alerts.RunawayTokenVelocity != 200000 {
+		t.Errorf("default runaway_token_velocity: want 200000, got %d", cfg.Alerts.RunawayTokenVelocity)
 	}
 	if cfg.Alerts.LoopDetectorThreshold != 3 {
 		t.Errorf("default loop_detector_threshold: want 3, got %d", cfg.Alerts.LoopDetectorThreshold)

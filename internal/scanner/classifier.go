@@ -12,13 +12,24 @@ import (
 // configured OTLP receiver port.
 //
 // Classification logic:
+//   - hasReceivedData=true => Connected (ground truth overrides env vars)
 //   - EnvReadable=false => Unknown
 //   - CLAUDE_CODE_ENABLE_TELEMETRY absent or "0" => Off
 //   - Telemetry=1, no OTEL_EXPORTER_OTLP_ENDPOINT => ConsoleOnly
 //   - Telemetry=1, endpoint port != configuredPort => WrongPort
-//   - Telemetry=1, endpoint port == configuredPort, data received => Connected
 //   - Telemetry=1, endpoint port == configuredPort, no data yet => Waiting
 func ClassifyTelemetry(proc ProcessInfo, configuredPort int, hasReceivedData bool) StatusInfo {
+	// If we've actually received telemetry data from this process, it's
+	// connected regardless of what the env vars say. This handles the case
+	// where telemetry is configured via settings file rather than env vars.
+	if hasReceivedData {
+		return StatusInfo{
+			Status: TelemetryConnected,
+			Icon:   "\u2705", // green check
+			Label:  "Connected",
+		}
+	}
+
 	// If environment is unreadable, we cannot determine anything.
 	if !proc.EnvReadable {
 		return StatusInfo{
@@ -28,7 +39,7 @@ func ClassifyTelemetry(proc ProcessInfo, configuredPort int, hasReceivedData boo
 		}
 	}
 
-	// Check if telemetry is enabled.
+	// Check if telemetry is enabled via env var.
 	telemetryVal, hasTelemetry := proc.EnvVars["CLAUDE_CODE_ENABLE_TELEMETRY"]
 	if !hasTelemetry || telemetryVal == "0" || telemetryVal == "" {
 		return StatusInfo{

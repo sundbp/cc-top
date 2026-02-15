@@ -40,12 +40,19 @@ type Store interface {
 	MarkExited(pid int)
 }
 
+// EventListener is a callback invoked after a new event is stored.
+// It receives the resolved session ID and the event. Listeners are
+// called outside the store lock and must not call back into the store
+// in a way that acquires a write lock to avoid deadlocks.
+type EventListener func(sessionID string, e Event)
+
 // MemoryStore is a thread-safe in-memory implementation of Store.
 // It indexes metrics and events by session.id using a sync.RWMutex
 // for safe concurrent access.
 type MemoryStore struct {
-	mu       sync.RWMutex
-	sessions map[string]*SessionData
+	mu             sync.RWMutex
+	sessions       map[string]*SessionData
+	eventListeners []EventListener
 }
 
 // NewMemoryStore creates a new empty MemoryStore ready for use.
@@ -53,6 +60,14 @@ func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
 		sessions: make(map[string]*SessionData),
 	}
+}
+
+// OnEvent registers a listener that is called after every AddEvent.
+// Listeners are invoked synchronously outside the store lock.
+func (ms *MemoryStore) OnEvent(fn EventListener) {
+	ms.mu.Lock()
+	defer ms.mu.Unlock()
+	ms.eventListeners = append(ms.eventListeners, fn)
 }
 
 // resolveSessionID returns the provided sessionID if non-empty, or
@@ -159,7 +174,6 @@ func (ms *MemoryStore) AddEvent(sessionID string, e Event) {
 	sessionID = resolveSessionID(sessionID)
 
 	ms.mu.Lock()
-	defer ms.mu.Unlock()
 
 	s := ms.getOrCreateSession(sessionID)
 	s.Events = append(s.Events, e)
@@ -181,6 +195,16 @@ func (ms *MemoryStore) AddEvent(sessionID string, e Event) {
 				s.TotalCost += cost
 			}
 		}
+	}
+
+	// Snapshot listeners while holding the lock.
+	listeners := ms.eventListeners
+
+	ms.mu.Unlock()
+
+	// Notify listeners outside the lock to prevent deadlocks.
+	for _, fn := range listeners {
+		fn(sessionID, e)
 	}
 }
 

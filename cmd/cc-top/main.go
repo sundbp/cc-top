@@ -63,6 +63,12 @@ func main() {
 	// Create the event buffer and formatter bridge.
 	eventBuf := events.NewRingBuffer(cfg.Display.EventBufferSize)
 
+	// Bridge: when the store receives an event, format it and push to the ring buffer.
+	store.OnEvent(func(sessionID string, e state.Event) {
+		fe := events.FormatEvent(sessionID, e)
+		eventBuf.Add(fe)
+	})
+
 	// Create the burn rate calculator.
 	brCalc := burnrate.NewCalculator(burnrate.Thresholds{
 		GreenBelow:  cfg.Display.CostColorGreenBelow,
@@ -93,25 +99,28 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
+	// Silence the default logger before starting background services
+	// so log.Printf calls from receivers/alerts don't pollute the TUI.
+	log.SetOutput(io.Discard)
+
 	// Start the OTLP receivers.
 	if err := recv.Start(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "cc-top: failed to start receivers: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Start the process scanner.
+	// Run an initial synchronous scan so the startup screen has results
+	// immediately, then start periodic background scanning.
+	proc.Scan()
 	proc.StartPeriodicScan()
 
 	// Start the alert engine.
 	alertEngine.Start(ctx)
 
-	// Silence the default logger so it doesn't pollute the TUI.
-	log.SetOutput(io.Discard)
-
 	// Create the TUI model with all providers wired up.
 	model := tui.NewModel(cfg,
 		tui.WithStateProvider(store),
-		tui.WithScannerProvider(&scannerAdapter{scanner: proc, cfg: cfg}),
+		tui.WithScannerProvider(&scannerAdapter{scanner: proc, cfg: cfg, store: store}),
 		tui.WithBurnRateProvider(&burnRateAdapter{calc: brCalc, store: store}),
 		tui.WithEventProvider(&eventAdapter{buf: eventBuf}),
 		tui.WithAlertProvider(&alertAdapter{engine: alertEngine}),
@@ -126,7 +135,6 @@ func main() {
 	// Create and run the Bubble Tea program.
 	p := tea.NewProgram(model,
 		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
 	)
 
 	// Handle OS signals in a goroutine.
@@ -161,6 +169,7 @@ func (a *portMapperAdapter) RecordSourcePort(sourcePort int, sessionID string) {
 type scannerAdapter struct {
 	scanner *scanner.Scanner
 	cfg     config.Config
+	store   *state.MemoryStore
 }
 
 func (a *scannerAdapter) Processes() []scanner.ProcessInfo {
@@ -168,7 +177,18 @@ func (a *scannerAdapter) Processes() []scanner.ProcessInfo {
 }
 
 func (a *scannerAdapter) GetTelemetryStatus(p scanner.ProcessInfo) scanner.StatusInfo {
-	return scanner.ClassifyTelemetry(p, a.cfg.Receiver.GRPCPort, false)
+	// Check if any session in the state store has this PID, indicating
+	// we've received telemetry data from this process.
+	hasData := false
+	if a.store != nil {
+		for _, s := range a.store.ListSessions() {
+			if s.PID == p.PID {
+				hasData = true
+				break
+			}
+		}
+	}
+	return scanner.ClassifyTelemetry(p, a.cfg.Receiver.GRPCPort, hasData)
 }
 
 func (a *scannerAdapter) Rescan() {

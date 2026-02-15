@@ -64,7 +64,7 @@ func TestAlertCostSurge_Fires(t *testing.T) {
 	base := time.Now().Add(-6 * time.Minute)
 
 	// Seed the calculator with cost data that produces a high hourly rate.
-	// $2+ in 5 minutes = $24+/hr
+	// $10 in 5 minutes = $120/hr > $100/hr threshold.
 	store.AddMetric("sess-1", state.Metric{
 		Name:      "claude_code.cost.usage",
 		Value:     0.0,
@@ -74,7 +74,7 @@ func TestAlertCostSurge_Fires(t *testing.T) {
 
 	store.AddMetric("sess-1", state.Metric{
 		Name:      "claude_code.cost.usage",
-		Value:     3.00,
+		Value:     10.00,
 		Timestamp: base.Add(5 * time.Minute),
 	})
 	_ = calc.ComputeWithTime(store, base.Add(5*time.Minute))
@@ -101,7 +101,7 @@ func TestAlertCostSurge_BelowThreshold(t *testing.T) {
 
 	base := time.Now().Add(-6 * time.Minute)
 
-	// Seed with low cost data: $0.05 over 5 minutes = $0.60/hr (below $2 threshold).
+	// Seed with low cost data: $0.05 over 5 minutes = $0.60/hr (below $100 threshold).
 	store.AddMetric("sess-1", state.Metric{
 		Name:      "claude_code.cost.usage",
 		Value:     0.0,
@@ -132,7 +132,7 @@ func TestAlertRunawayTokens_Fires(t *testing.T) {
 
 	base := time.Now().Add(-6 * time.Minute)
 
-	// 500k tokens over 5 minutes = 100k tokens/min > 50k threshold.
+	// 1.5M tokens over 5 minutes = 300k tokens/min > 200k threshold.
 	store.AddMetric("sess-1", state.Metric{
 		Name:       "claude_code.token.usage",
 		Value:      0,
@@ -148,7 +148,7 @@ func TestAlertRunawayTokens_Fires(t *testing.T) {
 
 	store.AddMetric("sess-1", state.Metric{
 		Name:       "claude_code.token.usage",
-		Value:      500000,
+		Value:      1500000,
 		Attributes: map[string]string{"type": "input"},
 		Timestamp:  base.Add(5 * time.Minute),
 	})

@@ -13,8 +13,8 @@ func DefaultConfig() Config {
 			IntervalSeconds: 5,
 		},
 		Alerts: AlertsConfig{
-			CostSurgeThresholdPerHour: 2.00,
-			RunawayTokenVelocity:      50000,
+			CostSurgeThresholdPerHour: 100.00,
+			RunawayTokenVelocity:      200000,
 			LoopDetectorThreshold:     3,
 			LoopDetectorWindowMinutes: 5,
 			ErrorStormCount:           10,

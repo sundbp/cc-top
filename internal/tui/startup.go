@@ -35,7 +35,7 @@ func (m Model) renderStartup() string {
 			"PID", "Terminal", "CWD", "Telemetry", "OTLP Dest", "Status")
 		sb.WriteString(dimStyle.Render(header))
 		sb.WriteByte('\n')
-		sb.WriteString(dimStyle.Render("  " + strings.Repeat("─", min(m.width-4, 80))))
+		sb.WriteString(dimStyle.Render("  " + strings.Repeat("─", max(min(m.width-4, 80), 0))))
 		sb.WriteByte('\n')
 
 		var connected, misconfigured, noTelemetry int
@@ -77,6 +77,31 @@ func (m Model) renderStartup() string {
 		sb.WriteByte('\n')
 		sb.WriteString("  " + m.startupMessage)
 		sb.WriteByte('\n')
+	}
+
+	// Show alerts if any are active.
+	activeAlerts := m.getActiveAlerts()
+	if len(activeAlerts) > 0 {
+		sb.WriteByte('\n')
+		contentW := m.width - 4
+		if contentW < 10 {
+			contentW = 10
+		}
+		// Show up to 5 alerts.
+		maxAlerts := 5
+		if len(activeAlerts) < maxAlerts {
+			maxAlerts = len(activeAlerts)
+		}
+		for i := 0; i < maxAlerts; i++ {
+			a := activeAlerts[i]
+			line := renderAlertLine(a, contentW, m.selectedSession)
+			sb.WriteString("  " + line)
+			sb.WriteByte('\n')
+		}
+		if len(activeAlerts) > maxAlerts {
+			sb.WriteString(dimStyle.Render(fmt.Sprintf("  ... and %d more alerts", len(activeAlerts)-maxAlerts)))
+			sb.WriteByte('\n')
+		}
 	}
 
 	return sb.String()

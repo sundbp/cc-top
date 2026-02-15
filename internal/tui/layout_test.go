@@ -11,6 +11,7 @@ import (
 	"github.com/nixlim/cc-top/internal/burnrate"
 	"github.com/nixlim/cc-top/internal/config"
 	"github.com/nixlim/cc-top/internal/events"
+	"github.com/nixlim/cc-top/internal/scanner"
 	"github.com/nixlim/cc-top/internal/state"
 	"github.com/nixlim/cc-top/internal/stats"
 )
@@ -488,5 +489,109 @@ func TestModel_QuittingView(t *testing.T) {
 	view := m.View()
 	if !strings.Contains(view, "Shutting down") {
 		t.Errorf("quitting view = %q, want to contain 'Shutting down'", view)
+	}
+}
+
+// TestModel_ViewZeroDimensions verifies that all views render without panicking
+// when width and height are zero (the state before the first WindowSizeMsg).
+func TestModel_ViewZeroDimensions(t *testing.T) {
+	cfg := config.DefaultConfig()
+
+	views := []struct {
+		name string
+		view ViewState
+	}{
+		{"startup", ViewStartup},
+		{"dashboard", ViewDashboard},
+		{"stats", ViewStats},
+	}
+
+	// Sub-cases: no providers, with scanner+processes, with alerts.
+	for _, v := range views {
+		t.Run(v.name+"_nil_providers", func(t *testing.T) {
+			m := NewModel(cfg, WithStartView(v.view))
+			// width=0 and height=0 (default), simulating pre-WindowSizeMsg state.
+			result := m.View()
+			if result == "" && v.view != ViewStartup {
+				// Dashboard/stats may return empty at zero size; just ensure no panic.
+				_ = result
+			}
+		})
+
+		t.Run(v.name+"_with_providers", func(t *testing.T) {
+			mockScan := &mockScannerProvider{
+				processes: []scanner.ProcessInfo{
+					{PID: 1234, Terminal: "iTerm2", CWD: "/test", EnvReadable: true, EnvVars: map[string]string{}},
+				},
+				statuses: map[int]scanner.StatusInfo{
+					1234: {Status: scanner.TelemetryOff, Icon: "NO", Label: "No telemetry"},
+				},
+			}
+			mockAlerts := &mockAlertProvider{
+				alerts: []alerts.Alert{
+					{Rule: "CostSurge", Severity: "critical", Message: "test alert", FiredAt: time.Now()},
+				},
+			}
+
+			m := NewModel(cfg,
+				WithStartView(v.view),
+				WithScannerProvider(mockScan),
+				WithAlertProvider(mockAlerts),
+				WithStateProvider(&mockStateProvider{}),
+				WithStatsProvider(&mockStatsProvider{}),
+			)
+			// Zero dimensions.
+			_ = m.View()
+		})
+	}
+}
+
+// TestModel_ViewSmallDimensions verifies rendering at very small terminal sizes.
+func TestModel_ViewSmallDimensions(t *testing.T) {
+	cfg := config.DefaultConfig()
+
+	sizes := []struct {
+		name   string
+		width  int
+		height int
+	}{
+		{"1x1", 1, 1},
+		{"10x5", 10, 5},
+		{"40x10", 40, 10},
+	}
+
+	views := []struct {
+		name string
+		view ViewState
+	}{
+		{"startup", ViewStartup},
+		{"dashboard", ViewDashboard},
+		{"stats", ViewStats},
+	}
+
+	mockScanner := &mockScannerProvider{
+		processes: []scanner.ProcessInfo{
+			{PID: 99, Terminal: "tmux", CWD: "/app", EnvReadable: true, EnvVars: map[string]string{}},
+		},
+		statuses: map[int]scanner.StatusInfo{
+			99: {Status: scanner.TelemetryOff, Icon: "NO", Label: "No telemetry"},
+		},
+	}
+
+	for _, sz := range sizes {
+		for _, v := range views {
+			t.Run(sz.name+"_"+v.name, func(t *testing.T) {
+				m := NewModel(cfg,
+					WithStartView(v.view),
+					WithScannerProvider(mockScanner),
+					WithStateProvider(&mockStateProvider{}),
+					WithStatsProvider(&mockStatsProvider{}),
+				)
+				m.width = sz.width
+				m.height = sz.height
+				// Must not panic.
+				_ = m.View()
+			})
+		}
 	}
 }

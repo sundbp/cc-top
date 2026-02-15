@@ -247,6 +247,67 @@ func TestTelemetryClassifier_EndpointParsing(t *testing.T) {
 	}
 }
 
+func TestTelemetryClassifier_HasReceivedData_OverridesEnvVars(t *testing.T) {
+	// When hasReceivedData is true, the classifier should return Connected
+	// regardless of what the env vars say. This covers the case where
+	// telemetry is configured via settings file (--setup) rather than env vars.
+	tests := []struct {
+		name    string
+		proc    ProcessInfo
+	}{
+		{
+			name: "no env vars at all",
+			proc: ProcessInfo{
+				PID:         1234,
+				EnvReadable: true,
+				EnvVars:     map[string]string{},
+			},
+		},
+		{
+			name: "telemetry explicitly off",
+			proc: ProcessInfo{
+				PID:         1234,
+				EnvReadable: true,
+				EnvVars: map[string]string{
+					"CLAUDE_CODE_ENABLE_TELEMETRY": "0",
+				},
+			},
+		},
+		{
+			name: "env unreadable",
+			proc: ProcessInfo{
+				PID:         1234,
+				EnvReadable: false,
+				EnvVars:     nil,
+			},
+		},
+		{
+			name: "wrong port in env but data flowing",
+			proc: ProcessInfo{
+				PID:         1234,
+				EnvReadable: true,
+				EnvVars: map[string]string{
+					"CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+					"OTEL_EXPORTER_OTLP_ENDPOINT":  "http://localhost:9999",
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ClassifyTelemetry(tt.proc, 4317, true)
+
+			if result.Status != TelemetryConnected {
+				t.Errorf("Status = %v, want TelemetryConnected (hasReceivedData should override)", result.Status)
+			}
+			if result.Label != "Connected" {
+				t.Errorf("Label = %q, want %q", result.Label, "Connected")
+			}
+		})
+	}
+}
+
 func TestTelemetryClassifier_OtlpExporterWithoutEndpoint(t *testing.T) {
 	// When exporters are set to "otlp" but no endpoint is specified,
 	// OTLP defaults to localhost:4317. So if cc-top is on 4317, this should

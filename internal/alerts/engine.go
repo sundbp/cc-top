@@ -5,7 +5,6 @@ package alerts
 
 import (
 	"context"
-	"log"
 	"sync"
 	"time"
 
@@ -195,5 +194,6 @@ func (e *Engine) recordFired(alert Alert) {
 		}
 	}
 
-	log.Printf("ALERT [%s] %s: %s", alert.Severity, alert.Rule, alert.Message)
+	// Alert is recorded in e.alerts and displayed via the TUI alerts panel.
+	// No log output here to avoid polluting the terminal UI.
 }

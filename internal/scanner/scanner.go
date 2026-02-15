@@ -6,6 +6,8 @@ package scanner
 
 import (
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -73,6 +75,8 @@ func NewDefaultScanner(intervalSeconds int) *Scanner {
 
 // Scan performs a single scan cycle: discovers Claude Code processes,
 // enriches them with argv/env/CWD, and tracks new/exited state.
+// Uses libproc as the primary method and pgrep as a fallback to ensure
+// detection on macOS Sequoia where libproc may have restricted access.
 func (s *Scanner) Scan() []ProcessInfo {
 	pids, err := s.api.ListAllPIDs()
 	if err != nil {
@@ -108,6 +112,39 @@ func (s *Scanner) Scan() []ProcessInfo {
 		}
 
 		discovered[pid] = info
+	}
+
+	// Fallback: if libproc found no Claude processes, use pgrep to find them.
+	// This handles cases where macOS privacy restrictions prevent libproc from
+	// reading process info for certain PIDs.
+	if len(discovered) == 0 {
+		fallbackPIDs := pgrepClaude()
+		for _, pid := range fallbackPIDs {
+			if _, exists := discovered[pid]; exists {
+				continue
+			}
+			// Try to enrich via libproc; use minimal info if that fails.
+			args, envVars, envErr := s.api.GetProcessArgs(pid)
+			envReadable := envErr == nil
+
+			// Skip Claude Desktop app processes.
+			if len(args) > 0 && strings.Contains(args[0], ".app/") {
+				continue
+			}
+
+			cwd, _ := s.api.GetProcessCWD(pid)
+
+			info := &ProcessInfo{
+				PID:         pid,
+				BinaryName:  "claude",
+				Args:        args,
+				CWD:         shortenHome(cwd),
+				Terminal:    detectTerminal(envVars),
+				EnvVars:     filterTelemetryEnvVars(envVars),
+				EnvReadable: envReadable,
+			}
+			discovered[pid] = info
+		}
 	}
 
 	s.mu.Lock()
@@ -306,4 +343,26 @@ func shortenHome(path string) string {
 		return "~" + path[len(home):]
 	}
 	return path
+}
+
+// pgrepClaude uses pgrep to find Claude Code CLI process PIDs as a fallback
+// when libproc-based detection fails (e.g., macOS privacy restrictions).
+func pgrepClaude() []int {
+	out, err := exec.Command("pgrep", "-x", "claude").Output()
+	if err != nil {
+		return nil
+	}
+	var pids []int
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		pid, err := strconv.Atoi(line)
+		if err != nil {
+			continue
+		}
+		pids = append(pids, pid)
+	}
+	return pids
 }

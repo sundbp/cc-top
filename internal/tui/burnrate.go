@@ -75,10 +75,15 @@ func (m Model) renderBurnRatePanel(w, h int) string {
 		Render(content)
 }
 
-// getBurnRate retrieves the current burn rate from the provider.
+// getBurnRate returns the cached burn rate (updated on tick, not every render).
 func (m Model) getBurnRate() burnrate.BurnRate {
+	return m.cachedBurnRate
+}
+
+// computeBurnRate retrieves a fresh burn rate from the provider.
+// Called only from the tick handler to avoid per-render recalculation.
+func (m Model) computeBurnRate() burnrate.BurnRate {
 	if m.burnRate == nil {
-		// Default zero burn rate.
 		return burnrate.BurnRate{}
 	}
 	if m.selectedSession != "" {
