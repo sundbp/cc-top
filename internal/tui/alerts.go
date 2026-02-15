@@ -22,11 +22,20 @@ func (m Model) renderAlertsPanel(w, h int) string {
 		contentW = 10
 	}
 
+	focused := m.panelFocus == FocusAlerts
+
 	activeAlerts := m.getActiveAlerts()
 
 	if len(activeAlerts) == 0 {
 		statusLine := statusBarStyle.Render(" Alerts: None ")
-		return panelBorderStyle.
+		if focused {
+			statusLine += dimStyle.Render(" (Esc:back)")
+		}
+		borderStyle := panelBorderStyle
+		if focused {
+			borderStyle = borderStyle.BorderForeground(focusBorderColor)
+		}
+		return borderStyle.
 			Width(w - 2).
 			Height(h - 2).
 			Render(statusLine)
@@ -40,12 +49,31 @@ func (m Model) renderAlertsPanel(w, h int) string {
 		visibleH = 1
 	}
 
-	startIdx := m.alertScrollPos
-	if startIdx > len(activeAlerts)-visibleH {
-		startIdx = len(activeAlerts) - visibleH
-	}
-	if startIdx < 0 {
-		startIdx = 0
+	// When focused, scroll to keep cursor visible.
+	startIdx := 0
+	if focused {
+		// Clamp cursor.
+		if m.alertCursor >= len(activeAlerts) {
+			m.alertCursor = len(activeAlerts) - 1
+		}
+		if m.alertCursor < 0 {
+			m.alertCursor = 0
+		}
+		startIdx = m.alertCursor - visibleH + 1
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		if m.alertCursor < startIdx {
+			startIdx = m.alertCursor
+		}
+	} else {
+		startIdx = m.alertScrollPos
+		if startIdx > len(activeAlerts)-visibleH {
+			startIdx = len(activeAlerts) - visibleH
+		}
+		if startIdx < 0 {
+			startIdx = 0
+		}
 	}
 
 	endIdx := startIdx + visibleH
@@ -56,6 +84,9 @@ func (m Model) renderAlertsPanel(w, h int) string {
 	for i := startIdx; i < endIdx; i++ {
 		a := activeAlerts[i]
 		line := renderAlertLine(a, contentW, m.selectedSession)
+		if focused && i == m.alertCursor {
+			line = cursorStyle.Width(contentW).Render(stripAnsi(line))
+		}
 		lines = append(lines, line)
 	}
 
@@ -66,10 +97,14 @@ func (m Model) renderAlertsPanel(w, h int) string {
 	}
 
 	content := strings.Join(lines, "\n")
+	borderColor := lipgloss.Color("196")
+	if focused {
+		borderColor = focusBorderColor
+	}
 	return panelBorderStyle.
 		Width(w - 2).
 		Height(h - 2).
-		BorderForeground(lipgloss.Color("196")).
+		BorderForeground(borderColor).
 		Render(content)
 }
 

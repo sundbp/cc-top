@@ -5,21 +5,23 @@ import "github.com/charmbracelet/bubbles/key"
 
 // KeyMap defines all key bindings for the cc-top TUI.
 type KeyMap struct {
-	Quit       key.Binding
-	Tab        key.Binding
-	Up         key.Binding
-	Down       key.Binding
-	Enter      key.Binding
-	Escape     key.Binding
-	Filter     key.Binding
-	KillSwitch key.Binding
-	ScrollUp   key.Binding
-	ScrollDown key.Binding
-	Enable     key.Binding
-	Fix        key.Binding
-	Rescan     key.Binding
-	Confirm    key.Binding
-	Deny       key.Binding
+	Quit        key.Binding
+	Tab         key.Binding
+	Up          key.Binding
+	Down        key.Binding
+	Enter       key.Binding
+	Escape      key.Binding
+	Filter      key.Binding
+	KillSwitch  key.Binding
+	ScrollUp    key.Binding
+	ScrollDown  key.Binding
+	Enable      key.Binding
+	Fix         key.Binding
+	Rescan      key.Binding
+	Confirm     key.Binding
+	Deny        key.Binding
+	FocusAlerts key.Binding
+	FocusEvents key.Binding
 }
 
 // DefaultKeyMap returns the default key bindings for cc-top.
@@ -84,6 +86,14 @@ func DefaultKeyMap() KeyMap {
 		Deny: key.NewBinding(
 			key.WithKeys("n", "N"),
 			key.WithHelp("n", "deny/cancel"),
+		),
+		FocusAlerts: key.NewBinding(
+			key.WithKeys("a"),
+			key.WithHelp("a", "focus alerts"),
+		),
+		FocusEvents: key.NewBinding(
+			key.WithKeys("e"),
+			key.WithHelp("e", "focus events"),
 		),
 	}
 }

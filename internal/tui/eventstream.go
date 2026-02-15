@@ -37,12 +37,17 @@ func (m Model) renderEventStreamPanel(w, h int) string {
 		contentH = 1
 	}
 
+	focused := m.panelFocus == FocusEvents
+
 	var lines []string
 
 	// Title.
 	title := panelTitleStyle.Render("Events")
 	if m.eventFilter.SessionID != "" {
 		title += dimStyle.Render(" [" + truncateID(m.eventFilter.SessionID, 8) + "]")
+	}
+	if focused {
+		title += dimStyle.Render(" (Enter:detail Esc:back)")
 	}
 	lines = append(lines, title)
 
@@ -53,7 +58,11 @@ func (m Model) renderEventStreamPanel(w, h int) string {
 		lines = append(lines, "")
 		lines = append(lines, dimStyle.Render("No data received yet"))
 		content := strings.Join(lines, "\n")
-		return panelBorderStyle.
+		borderStyle := panelBorderStyle
+		if focused {
+			borderStyle = borderStyle.BorderForeground(focusBorderColor)
+		}
+		return borderStyle.
 			Width(w - 2).
 			Height(h - 2).
 			Render(content)
@@ -65,9 +74,25 @@ func (m Model) renderEventStreamPanel(w, h int) string {
 		visibleLines = 1
 	}
 
-	// Auto-scroll: show the most recent events.
+	// When focused, scroll to keep cursor visible.
 	startIdx := 0
-	if m.autoScroll {
+	if focused {
+		// Ensure the event cursor stays within bounds.
+		if m.eventCursor >= len(evts) {
+			m.eventCursor = len(evts) - 1
+		}
+		if m.eventCursor < 0 {
+			m.eventCursor = 0
+		}
+		// Scroll to keep cursor in view.
+		startIdx = m.eventCursor - visibleLines + 1
+		if startIdx < 0 {
+			startIdx = 0
+		}
+		if m.eventCursor < startIdx {
+			startIdx = m.eventCursor
+		}
+	} else if m.autoScroll {
 		startIdx = len(evts) - visibleLines
 		if startIdx < 0 {
 			startIdx = 0
@@ -89,6 +114,9 @@ func (m Model) renderEventStreamPanel(w, h int) string {
 
 	for i := startIdx; i < endIdx; i++ {
 		line := renderEventLine(evts[i], contentW)
+		if focused && i == m.eventCursor {
+			line = cursorStyle.Width(contentW).Render(stripAnsi(line))
+		}
 		lines = append(lines, line)
 	}
 
@@ -101,7 +129,11 @@ func (m Model) renderEventStreamPanel(w, h int) string {
 	}
 
 	content := strings.Join(lines, "\n")
-	return panelBorderStyle.
+	borderStyle := panelBorderStyle
+	if focused {
+		borderStyle = borderStyle.BorderForeground(focusBorderColor)
+	}
+	return borderStyle.
 		Width(w - 2).
 		Height(h - 2).
 		Render(content)

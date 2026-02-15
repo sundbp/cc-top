@@ -7,6 +7,7 @@
 package tui
 
 import (
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -31,6 +32,18 @@ const (
 	ViewDashboard
 	// ViewStats shows the full-screen stats dashboard.
 	ViewStats
+)
+
+// PanelFocus represents which dashboard panel currently has keyboard focus.
+type PanelFocus int
+
+const (
+	// FocusSessions is the default focus on the session list panel.
+	FocusSessions PanelFocus = iota
+	// FocusEvents gives focus to the event stream panel.
+	FocusEvents
+	// FocusAlerts gives focus to the alerts panel.
+	FocusAlerts
 )
 
 // tickMsg is sent periodically to trigger TUI refresh.
@@ -125,6 +138,15 @@ type Model struct {
 
 	// Alert scroll state.
 	alertScrollPos int
+	alertCursor    int // cursor position within visible alerts
+
+	// Panel focus and detail overlay.
+	panelFocus      PanelFocus
+	eventCursor     int    // cursor position within visible events
+	detailOverlay   bool   // whether the detail overlay is shown
+	detailContent   string // full text to display in the overlay
+	detailTitle     string // title for the detail overlay
+	detailScrollPos int    // scroll position within the detail overlay
 
 	// Stats view scroll.
 	statsScrollPos int
@@ -244,6 +266,11 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleKillConfirmKey(msg)
 	}
 
+	// Detail overlay takes priority when active.
+	if m.detailOverlay {
+		return m.handleDetailOverlayKey(msg)
+	}
+
 	// Filter menu takes priority when active.
 	if m.filterMenu.Active {
 		return m.handleFilterMenuKey(msg)
@@ -316,12 +343,54 @@ func (m Model) handleStartupKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // handleDashboardKey handles keys on the main dashboard.
+// It routes to panel-specific handlers based on the current panel focus.
 func (m Model) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Global dashboard keys (always available regardless of focus).
 	switch {
 	case key.Matches(msg, m.keys.Tab):
+		m.panelFocus = FocusSessions
 		m.view = ViewStats
 		return m, nil
 
+	case key.Matches(msg, m.keys.Filter):
+		m.filterMenu.Active = true
+		m.filterMenu.Cursor = 0
+		return m, nil
+
+	case key.Matches(msg, m.keys.FocusAlerts):
+		if m.panelFocus != FocusAlerts {
+			m.panelFocus = FocusAlerts
+			m.alertCursor = 0
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.FocusEvents):
+		if m.panelFocus != FocusEvents {
+			m.panelFocus = FocusEvents
+			m.autoScroll = false
+			// Set cursor to last visible event.
+			evts := m.getFilteredEvents(m.cfg.Display.EventBufferSize)
+			if len(evts) > 0 {
+				m.eventCursor = len(evts) - 1
+			}
+		}
+		return m, nil
+	}
+
+	// Panel-specific key handling.
+	switch m.panelFocus {
+	case FocusEvents:
+		return m.handleEventsPanelKey(msg)
+	case FocusAlerts:
+		return m.handleAlertsPanelKey(msg)
+	default:
+		return m.handleSessionsPanelKey(msg)
+	}
+}
+
+// handleSessionsPanelKey handles keys when the session list panel has focus.
+func (m Model) handleSessionsPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
 	case key.Matches(msg, m.keys.Up):
 		if m.sessionCursor > 0 {
 			m.sessionCursor--
@@ -348,11 +417,6 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.eventFilter.SessionID = ""
 		return m, nil
 
-	case key.Matches(msg, m.keys.Filter):
-		m.filterMenu.Active = true
-		m.filterMenu.Cursor = 0
-		return m, nil
-
 	case key.Matches(msg, m.keys.ScrollDown):
 		m.autoScroll = false
 		m.eventScrollPos++
@@ -367,6 +431,137 @@ func (m Model) handleDashboardKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// handleEventsPanelKey handles keys when the event stream panel has focus.
+func (m Model) handleEventsPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	evts := m.getFilteredEvents(m.cfg.Display.EventBufferSize)
+
+	switch {
+	case key.Matches(msg, m.keys.Up), key.Matches(msg, m.keys.ScrollUp):
+		if m.eventCursor > 0 {
+			m.eventCursor--
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.Down), key.Matches(msg, m.keys.ScrollDown):
+		if m.eventCursor < len(evts)-1 {
+			m.eventCursor++
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.Enter):
+		if m.eventCursor >= 0 && m.eventCursor < len(evts) {
+			e := evts[m.eventCursor]
+			m.detailOverlay = true
+			m.detailTitle = "Event Detail"
+			m.detailContent = m.formatEventDetail(e)
+			m.detailScrollPos = 0
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.Escape):
+		m.panelFocus = FocusSessions
+		m.autoScroll = true
+		return m, nil
+	}
+
+	return m, nil
+}
+
+// handleAlertsPanelKey handles keys when the alerts panel has focus.
+func (m Model) handleAlertsPanelKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	activeAlerts := m.getActiveAlerts()
+
+	switch {
+	case key.Matches(msg, m.keys.Up), key.Matches(msg, m.keys.ScrollUp):
+		if m.alertCursor > 0 {
+			m.alertCursor--
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.Down), key.Matches(msg, m.keys.ScrollDown):
+		if m.alertCursor < len(activeAlerts)-1 {
+			m.alertCursor++
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.Enter):
+		if m.alertCursor >= 0 && m.alertCursor < len(activeAlerts) {
+			a := activeAlerts[m.alertCursor]
+			m.detailOverlay = true
+			m.detailTitle = "Alert Detail"
+			m.detailContent = m.formatAlertDetail(a)
+			m.detailScrollPos = 0
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.Escape):
+		m.panelFocus = FocusSessions
+		return m, nil
+	}
+
+	return m, nil
+}
+
+// handleDetailOverlayKey handles keys when the detail overlay is active.
+func (m Model) handleDetailOverlayKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, m.keys.Escape), key.Matches(msg, m.keys.Enter):
+		m.detailOverlay = false
+		m.detailContent = ""
+		m.detailTitle = ""
+		m.detailScrollPos = 0
+		return m, nil
+
+	case key.Matches(msg, m.keys.Up), key.Matches(msg, m.keys.ScrollUp):
+		if m.detailScrollPos > 0 {
+			m.detailScrollPos--
+		}
+		return m, nil
+
+	case key.Matches(msg, m.keys.Down), key.Matches(msg, m.keys.ScrollDown):
+		m.detailScrollPos++
+		return m, nil
+	}
+
+	return m, nil
+}
+
+// formatEventDetail builds the full detail content for an event.
+func (m Model) formatEventDetail(e events.FormattedEvent) string {
+	var lines []string
+	lines = append(lines, "Type:      "+e.EventType)
+	lines = append(lines, "Session:   "+e.SessionID)
+	lines = append(lines, "Timestamp: "+e.Timestamp.Format("2006-01-02 15:04:05"))
+	if e.Success != nil {
+		if *e.Success {
+			lines = append(lines, "Status:    success")
+		} else {
+			lines = append(lines, "Status:    failure")
+		}
+	}
+	lines = append(lines, "")
+	lines = append(lines, "Content:")
+	lines = append(lines, e.Formatted)
+	return strings.Join(lines, "\n")
+}
+
+// formatAlertDetail builds the full detail content for an alert.
+func (m Model) formatAlertDetail(a alerts.Alert) string {
+	var lines []string
+	lines = append(lines, "Rule:      "+a.Rule)
+	lines = append(lines, "Severity:  "+a.Severity)
+	if a.SessionID != "" {
+		lines = append(lines, "Session:   "+a.SessionID)
+	} else {
+		lines = append(lines, "Session:   (global)")
+	}
+	lines = append(lines, "Fired at:  "+a.FiredAt.Format("2006-01-02 15:04:05"))
+	lines = append(lines, "")
+	lines = append(lines, "Message:")
+	lines = append(lines, a.Message)
+	return strings.Join(lines, "\n")
 }
 
 // handleStatsKey handles keys on the stats dashboard.

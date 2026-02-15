@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"regexp"
+	"strings"
+
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -179,7 +182,31 @@ var (
 	newBadgeStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("82")).
 			Bold(true)
+
+	// focusBorderColor is the border color for focused panels.
+	focusBorderColor = lipgloss.Color("63")
+
+	// cursorStyle highlights the cursor line in focused panels.
+	cursorStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("15")).
+			Background(lipgloss.Color("62"))
+
+	// detailOverlayStyle wraps the detail overlay dialog.
+	detailOverlayStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(lipgloss.Color("69")).
+				Padding(1, 2)
 )
+
+// ansiRe matches ANSI escape sequences for stripping.
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+// stripAnsi removes ANSI escape sequences from a string,
+// needed when re-styling a line with a cursor highlight.
+func stripAnsi(s string) string {
+	return ansiRe.ReplaceAllString(s, "")
+}
 
 // renderDashboard composes the main dashboard view from four panels.
 func (m Model) renderDashboard() string {
@@ -213,6 +240,11 @@ func (m Model) renderDashboard() string {
 		layout = m.overlayFilterMenu(layout)
 	}
 
+	// Overlay detail view if active.
+	if m.detailOverlay {
+		layout = m.overlayDetail(layout)
+	}
+
 	return layout
 }
 
@@ -226,7 +258,7 @@ func (m Model) renderHeader(dims panelDimensions) string {
 		viewLabel += " Global"
 	}
 
-	help := "Tab:Stats  q:Quit  f:Filter  Ctrl+K:Kill "
+	help := m.headerHelp()
 
 	// Pad to fill width.
 	padding := m.width - lipgloss.Width(title) - lipgloss.Width(viewLabel) - lipgloss.Width(help)
@@ -239,6 +271,18 @@ func (m Model) renderHeader(dims panelDimensions) string {
 	}
 
 	return headerStyle.Width(m.width).Render(title + viewLabel + spaces + help)
+}
+
+// headerHelp returns the context-sensitive help text for the header bar.
+func (m Model) headerHelp() string {
+	switch m.panelFocus {
+	case FocusEvents:
+		return "Enter:Detail  Esc:Back  a:Alerts  Tab:Stats  q:Quit "
+	case FocusAlerts:
+		return "Enter:Detail  Esc:Back  e:Events  Tab:Stats  q:Quit "
+	default:
+		return "a:Alerts  e:Events  Tab:Stats  q:Quit  f:Filter  Ctrl+K:Kill "
+	}
 }
 
 // truncateID returns a truncated identifier for display.
@@ -304,6 +348,96 @@ func (m Model) overlayFilterMenu(base string) string {
 	}
 
 	return placeOverlay(x, y, dialog, base)
+}
+
+// overlayDetail renders the detail view over the layout.
+func (m Model) overlayDetail(base string) string {
+	// Compute overlay size: ~70% of terminal, clamped.
+	overlayW := m.width * 70 / 100
+	if overlayW < 40 {
+		overlayW = 40
+	}
+	if overlayW > m.width-4 {
+		overlayW = m.width - 4
+	}
+	overlayH := m.height * 60 / 100
+	if overlayH < 10 {
+		overlayH = 10
+	}
+	if overlayH > m.height-4 {
+		overlayH = m.height - 4
+	}
+
+	contentW := overlayW - 6 // padding + border
+	if contentW < 10 {
+		contentW = 10
+	}
+	contentH := overlayH - 4 // border + padding
+	if contentH < 3 {
+		contentH = 3
+	}
+
+	// Build the content with scroll support.
+	allLines := strings.Split(m.detailContent, "\n")
+
+	// Word-wrap long lines to fit the overlay width.
+	var wrapped []string
+	for _, line := range allLines {
+		if len(line) <= contentW {
+			wrapped = append(wrapped, line)
+		} else {
+			// Simple word wrap.
+			for len(line) > contentW {
+				// Find last space within contentW.
+				cutAt := contentW
+				for i := contentW; i > 0; i-- {
+					if line[i] == ' ' {
+						cutAt = i
+						break
+					}
+				}
+				wrapped = append(wrapped, line[:cutAt])
+				line = line[cutAt:]
+				if len(line) > 0 && line[0] == ' ' {
+					line = line[1:]
+				}
+			}
+			if line != "" {
+				wrapped = append(wrapped, line)
+			}
+		}
+	}
+
+	// Apply scroll.
+	startIdx := m.detailScrollPos
+	if startIdx > len(wrapped)-contentH {
+		startIdx = len(wrapped) - contentH
+	}
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	endIdx := startIdx + contentH
+	if endIdx > len(wrapped) {
+		endIdx = len(wrapped)
+	}
+
+	visibleLines := wrapped[startIdx:endIdx]
+	body := strings.Join(visibleLines, "\n")
+
+	// Title and footer.
+	title := panelTitleStyle.Render(m.detailTitle)
+	footer := dimStyle.Render("Esc/Enter: Close")
+	if len(wrapped) > contentH {
+		footer += dimStyle.Render("  Up/Down: Scroll")
+	}
+
+	content := title + "\n\n" + body + "\n\n" + footer
+
+	dialog := detailOverlayStyle.
+		Width(overlayW - 2).
+		Render(content)
+
+	return placeOverlay(0, 0, dialog, base)
 }
 
 // placeOverlay places fg on top of bg at position (x, y).

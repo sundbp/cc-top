@@ -595,3 +595,532 @@ func TestModel_ViewSmallDimensions(t *testing.T) {
 		}
 	}
 }
+
+// --- Panel Focus and Detail Overlay Tests ---
+
+func TestModel_FocusEvents(t *testing.T) {
+	cfg := config.DefaultConfig()
+	boolTrue := true
+	mockEvents := &mockEventProvider{
+		events: []events.FormattedEvent{
+			{SessionID: "s1", EventType: "api_request", Formatted: "event1", Timestamp: time.Now(), Success: &boolTrue},
+			{SessionID: "s1", EventType: "api_request", Formatted: "event2", Timestamp: time.Now(), Success: &boolTrue},
+			{SessionID: "s1", EventType: "api_request", Formatted: "event3", Timestamp: time.Now(), Success: &boolTrue},
+		},
+	}
+
+	m := NewModel(cfg, WithStartView(ViewDashboard), WithEventProvider(mockEvents))
+	m.width = 120
+	m.height = 40
+
+	// Default focus is sessions.
+	if m.panelFocus != FocusSessions {
+		t.Errorf("default panelFocus = %d, want FocusSessions (%d)", m.panelFocus, FocusSessions)
+	}
+
+	// Press 'e' to focus events.
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	m2 := result.(Model)
+	if m2.panelFocus != FocusEvents {
+		t.Errorf("after 'e', panelFocus = %d, want FocusEvents (%d)", m2.panelFocus, FocusEvents)
+	}
+	if m2.autoScroll {
+		t.Error("after focusing events, autoScroll should be false")
+	}
+	// Event cursor should be set to last event.
+	if m2.eventCursor != 2 {
+		t.Errorf("after 'e', eventCursor = %d, want 2", m2.eventCursor)
+	}
+
+	// Navigate up.
+	result, _ = m2.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m3 := result.(Model)
+	if m3.eventCursor != 1 {
+		t.Errorf("after Up, eventCursor = %d, want 1", m3.eventCursor)
+	}
+
+	// Navigate up again.
+	result, _ = m3.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m4 := result.(Model)
+	if m4.eventCursor != 0 {
+		t.Errorf("after Up, eventCursor = %d, want 0", m4.eventCursor)
+	}
+
+	// Can't go above 0.
+	result, _ = m4.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m5 := result.(Model)
+	if m5.eventCursor != 0 {
+		t.Errorf("after Up at 0, eventCursor = %d, want 0", m5.eventCursor)
+	}
+
+	// Navigate down.
+	result, _ = m5.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m6 := result.(Model)
+	if m6.eventCursor != 1 {
+		t.Errorf("after Down, eventCursor = %d, want 1", m6.eventCursor)
+	}
+
+	// Escape returns to sessions focus and re-enables auto-scroll.
+	result, _ = m6.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m7 := result.(Model)
+	if m7.panelFocus != FocusSessions {
+		t.Errorf("after Esc, panelFocus = %d, want FocusSessions (%d)", m7.panelFocus, FocusSessions)
+	}
+	if !m7.autoScroll {
+		t.Error("after Esc from events, autoScroll should be true")
+	}
+}
+
+func TestModel_FocusAlerts(t *testing.T) {
+	cfg := config.DefaultConfig()
+	mockAlerts := &mockAlertProvider{
+		alerts: []alerts.Alert{
+			{Rule: "CostSurge", Severity: "warning", Message: "Cost rate high", SessionID: "s1", FiredAt: time.Now()},
+			{Rule: "LoopDetector", Severity: "critical", Message: "Loop detected", SessionID: "s2", FiredAt: time.Now()},
+		},
+	}
+
+	m := NewModel(cfg, WithStartView(ViewDashboard), WithAlertProvider(mockAlerts))
+	m.width = 120
+	m.height = 40
+
+	// Press 'a' to focus alerts.
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m2 := result.(Model)
+	if m2.panelFocus != FocusAlerts {
+		t.Errorf("after 'a', panelFocus = %d, want FocusAlerts (%d)", m2.panelFocus, FocusAlerts)
+	}
+	if m2.alertCursor != 0 {
+		t.Errorf("after 'a', alertCursor = %d, want 0", m2.alertCursor)
+	}
+
+	// Navigate down.
+	result, _ = m2.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m3 := result.(Model)
+	if m3.alertCursor != 1 {
+		t.Errorf("after Down, alertCursor = %d, want 1", m3.alertCursor)
+	}
+
+	// Can't go past end.
+	result, _ = m3.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m4 := result.(Model)
+	if m4.alertCursor != 1 {
+		t.Errorf("after Down at end, alertCursor = %d, want 1", m4.alertCursor)
+	}
+
+	// Escape returns to sessions.
+	result, _ = m4.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m5 := result.(Model)
+	if m5.panelFocus != FocusSessions {
+		t.Errorf("after Esc, panelFocus = %d, want FocusSessions (%d)", m5.panelFocus, FocusSessions)
+	}
+}
+
+func TestModel_EventDetailOverlay(t *testing.T) {
+	cfg := config.DefaultConfig()
+	boolTrue := true
+	mockEvents := &mockEventProvider{
+		events: []events.FormattedEvent{
+			{
+				SessionID: "sess-001",
+				EventType: "api_request",
+				Formatted: "[sess-001] claude-opus-4-6 -> 3 in / 431 out ($1.23) 4.2s",
+				Timestamp: time.Now(),
+				Success:   &boolTrue,
+			},
+		},
+	}
+
+	m := NewModel(cfg, WithStartView(ViewDashboard), WithEventProvider(mockEvents))
+	m.width = 120
+	m.height = 40
+
+	// Focus events.
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	m2 := result.(Model)
+
+	// Press Enter to open detail.
+	result, _ = m2.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m3 := result.(Model)
+	if !m3.detailOverlay {
+		t.Error("after Enter in events, detailOverlay should be true")
+	}
+	if m3.detailTitle != "Event Detail" {
+		t.Errorf("detailTitle = %q, want %q", m3.detailTitle, "Event Detail")
+	}
+	if !strings.Contains(m3.detailContent, "api_request") {
+		t.Error("detail content should contain event type")
+	}
+	if !strings.Contains(m3.detailContent, "sess-001") {
+		t.Error("detail content should contain session ID")
+	}
+	if !strings.Contains(m3.detailContent, "claude-opus-4-6") {
+		t.Error("detail content should contain the full formatted event text")
+	}
+
+	// Render should not panic and should contain the detail overlay.
+	view := m3.View()
+	if view == "" {
+		t.Error("View() returned empty string with detail overlay")
+	}
+
+	// Escape closes the overlay.
+	result, _ = m3.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m4 := result.(Model)
+	if m4.detailOverlay {
+		t.Error("after Esc, detailOverlay should be false")
+	}
+	if m4.detailContent != "" {
+		t.Error("after Esc, detailContent should be empty")
+	}
+}
+
+func TestModel_AlertDetailOverlay(t *testing.T) {
+	cfg := config.DefaultConfig()
+	mockAlerts := &mockAlertProvider{
+		alerts: []alerts.Alert{
+			{
+				Rule:      "CostSurge",
+				Severity:  "critical",
+				Message:   "Cost surge: $125.56/hr exceeds threshold $100.00/hr for session sess-001",
+				SessionID: "sess-001",
+				FiredAt:   time.Now(),
+			},
+		},
+	}
+
+	m := NewModel(cfg, WithStartView(ViewDashboard), WithAlertProvider(mockAlerts))
+	m.width = 120
+	m.height = 40
+
+	// Focus alerts, then enter.
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m2 := result.(Model)
+
+	result, _ = m2.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m3 := result.(Model)
+	if !m3.detailOverlay {
+		t.Error("after Enter in alerts, detailOverlay should be true")
+	}
+	if m3.detailTitle != "Alert Detail" {
+		t.Errorf("detailTitle = %q, want %q", m3.detailTitle, "Alert Detail")
+	}
+	if !strings.Contains(m3.detailContent, "CostSurge") {
+		t.Error("detail content should contain rule name")
+	}
+	if !strings.Contains(m3.detailContent, "critical") {
+		t.Error("detail content should contain severity")
+	}
+	if !strings.Contains(m3.detailContent, "$125.56/hr") {
+		t.Error("detail content should contain full message")
+	}
+
+	// Render with overlay.
+	view := m3.View()
+	if view == "" {
+		t.Error("View() returned empty string with alert detail overlay")
+	}
+
+	// Enter also closes the overlay.
+	result, _ = m3.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m4 := result.(Model)
+	if m4.detailOverlay {
+		t.Error("after Enter, detailOverlay should be false")
+	}
+}
+
+func TestModel_DetailOverlayScroll(t *testing.T) {
+	cfg := config.DefaultConfig()
+	mockAlerts := &mockAlertProvider{
+		alerts: []alerts.Alert{
+			{
+				Rule:      "LoopDetector",
+				Severity:  "critical",
+				Message:   "Very long alert message that spans many lines when wrapped in the detail overlay to test scrolling functionality",
+				SessionID: "sess-001",
+				FiredAt:   time.Now(),
+			},
+		},
+	}
+
+	m := NewModel(cfg, WithStartView(ViewDashboard), WithAlertProvider(mockAlerts))
+	m.width = 120
+	m.height = 40
+
+	// Focus alerts and open detail.
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m2 := result.(Model)
+	result, _ = m2.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m3 := result.(Model)
+
+	if m3.detailScrollPos != 0 {
+		t.Errorf("initial detailScrollPos = %d, want 0", m3.detailScrollPos)
+	}
+
+	// Scroll down.
+	result, _ = m3.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m4 := result.(Model)
+	if m4.detailScrollPos != 1 {
+		t.Errorf("after Down, detailScrollPos = %d, want 1", m4.detailScrollPos)
+	}
+
+	// Scroll up.
+	result, _ = m4.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m5 := result.(Model)
+	if m5.detailScrollPos != 0 {
+		t.Errorf("after Up, detailScrollPos = %d, want 0", m5.detailScrollPos)
+	}
+
+	// Can't go below 0.
+	result, _ = m5.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m6 := result.(Model)
+	if m6.detailScrollPos != 0 {
+		t.Errorf("after Up at 0, detailScrollPos = %d, want 0", m6.detailScrollPos)
+	}
+}
+
+func TestModel_FocusSwitchBetweenPanels(t *testing.T) {
+	cfg := config.DefaultConfig()
+	m := NewModel(cfg, WithStartView(ViewDashboard))
+	m.width = 120
+	m.height = 40
+
+	// Start at sessions.
+	if m.panelFocus != FocusSessions {
+		t.Fatalf("initial focus = %d, want FocusSessions", m.panelFocus)
+	}
+
+	// 'e' -> events.
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	m2 := result.(Model)
+	if m2.panelFocus != FocusEvents {
+		t.Errorf("after 'e', focus = %d, want FocusEvents", m2.panelFocus)
+	}
+
+	// 'a' from events -> alerts.
+	result, _ = m2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m3 := result.(Model)
+	if m3.panelFocus != FocusAlerts {
+		t.Errorf("after 'a' from events, focus = %d, want FocusAlerts", m3.panelFocus)
+	}
+
+	// 'e' from alerts -> events.
+	result, _ = m3.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	m4 := result.(Model)
+	if m4.panelFocus != FocusEvents {
+		t.Errorf("after 'e' from alerts, focus = %d, want FocusEvents", m4.panelFocus)
+	}
+
+	// Esc -> sessions.
+	result, _ = m4.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m5 := result.(Model)
+	if m5.panelFocus != FocusSessions {
+		t.Errorf("after Esc, focus = %d, want FocusSessions", m5.panelFocus)
+	}
+}
+
+func TestModel_DetailOverlayBlocksOtherKeys(t *testing.T) {
+	cfg := config.DefaultConfig()
+	boolTrue := true
+	mockEvents := &mockEventProvider{
+		events: []events.FormattedEvent{
+			{SessionID: "s1", EventType: "api_request", Formatted: "test event", Timestamp: time.Now(), Success: &boolTrue},
+		},
+	}
+
+	m := NewModel(cfg, WithStartView(ViewDashboard), WithEventProvider(mockEvents))
+	m.width = 120
+	m.height = 40
+
+	// Focus events and open detail.
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	m2 := result.(Model)
+	result, _ = m2.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m3 := result.(Model)
+
+	// Tab should NOT switch views while detail is open.
+	result, _ = m3.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m4 := result.(Model)
+	if m4.view != ViewDashboard {
+		t.Error("Tab should not switch views while detail overlay is open")
+	}
+	// Detail should still be open.
+	if !m4.detailOverlay {
+		t.Error("detail overlay should still be open after Tab")
+	}
+
+	// 'f' should not open filter menu.
+	result, _ = m4.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	m5 := result.(Model)
+	if m5.filterMenu.Active {
+		t.Error("filter menu should not open while detail overlay is open")
+	}
+}
+
+func TestModel_HeaderHelp(t *testing.T) {
+	cfg := config.DefaultConfig()
+	m := NewModel(cfg, WithStartView(ViewDashboard))
+	m.width = 120
+	m.height = 40
+
+	// Default: sessions focus shows a/e/Tab help.
+	help := m.headerHelp()
+	if !strings.Contains(help, "a:Alerts") {
+		t.Error("sessions focus header should contain 'a:Alerts'")
+	}
+	if !strings.Contains(help, "e:Events") {
+		t.Error("sessions focus header should contain 'e:Events'")
+	}
+
+	// Events focus.
+	m.panelFocus = FocusEvents
+	help = m.headerHelp()
+	if !strings.Contains(help, "Enter:Detail") {
+		t.Error("events focus header should contain 'Enter:Detail'")
+	}
+	if !strings.Contains(help, "Esc:Back") {
+		t.Error("events focus header should contain 'Esc:Back'")
+	}
+
+	// Alerts focus.
+	m.panelFocus = FocusAlerts
+	help = m.headerHelp()
+	if !strings.Contains(help, "Enter:Detail") {
+		t.Error("alerts focus header should contain 'Enter:Detail'")
+	}
+	if !strings.Contains(help, "e:Events") {
+		t.Error("alerts focus header should contain 'e:Events'")
+	}
+}
+
+func TestModel_FocusEventsEmptyList(t *testing.T) {
+	cfg := config.DefaultConfig()
+	m := NewModel(cfg, WithStartView(ViewDashboard))
+	m.width = 120
+	m.height = 40
+
+	// Focus events when there are no events.
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	m2 := result.(Model)
+	if m2.panelFocus != FocusEvents {
+		t.Errorf("should still focus events even if empty")
+	}
+
+	// Enter on empty should not open detail.
+	result, _ = m2.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m3 := result.(Model)
+	if m3.detailOverlay {
+		t.Error("should not open detail overlay for empty events")
+	}
+}
+
+func TestModel_FocusAlertsEmptyList(t *testing.T) {
+	cfg := config.DefaultConfig()
+	mockAlerts := &mockAlertProvider{alerts: nil}
+	m := NewModel(cfg, WithStartView(ViewDashboard), WithAlertProvider(mockAlerts))
+	m.width = 120
+	m.height = 40
+
+	// Focus alerts when there are no alerts.
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m2 := result.(Model)
+	if m2.panelFocus != FocusAlerts {
+		t.Errorf("should still focus alerts even if empty")
+	}
+
+	// Enter on empty should not open detail.
+	result, _ = m2.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m3 := result.(Model)
+	if m3.detailOverlay {
+		t.Error("should not open detail overlay for empty alerts")
+	}
+}
+
+func TestModel_TabResetsFocus(t *testing.T) {
+	cfg := config.DefaultConfig()
+	m := NewModel(cfg, WithStartView(ViewDashboard))
+	m.width = 120
+	m.height = 40
+
+	// Focus events, then Tab to stats.
+	result, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'e'}})
+	m2 := result.(Model)
+	result, _ = m2.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m3 := result.(Model)
+	if m3.view != ViewStats {
+		t.Error("Tab should switch to stats view")
+	}
+	if m3.panelFocus != FocusSessions {
+		t.Errorf("Tab should reset focus to sessions, got %d", m3.panelFocus)
+	}
+}
+
+func TestStripAnsi(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"plain text", "hello world", "hello world"},
+		{"with colors", "\x1b[31mred\x1b[0m text", "red text"},
+		{"bold", "\x1b[1mbold\x1b[0m", "bold"},
+		{"empty", "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripAnsi(tt.input)
+			if got != tt.want {
+				t.Errorf("stripAnsi(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestModel_RenderWithFocusedPanels(t *testing.T) {
+	cfg := config.DefaultConfig()
+	boolTrue := true
+	mockEvents := &mockEventProvider{
+		events: []events.FormattedEvent{
+			{SessionID: "s1", EventType: "api_request", Formatted: "test event", Timestamp: time.Now(), Success: &boolTrue},
+		},
+	}
+	mockAlerts := &mockAlertProvider{
+		alerts: []alerts.Alert{
+			{Rule: "CostSurge", Severity: "warning", Message: "test alert", SessionID: "s1", FiredAt: time.Now()},
+		},
+	}
+
+	m := NewModel(cfg,
+		WithStartView(ViewDashboard),
+		WithEventProvider(mockEvents),
+		WithAlertProvider(mockAlerts),
+		WithStateProvider(&mockStateProvider{}),
+	)
+	m.width = 120
+	m.height = 40
+
+	// Render with events focused.
+	m.panelFocus = FocusEvents
+	m.eventCursor = 0
+	view := m.View()
+	if view == "" {
+		t.Error("View() returned empty string with events focused")
+	}
+
+	// Render with alerts focused.
+	m.panelFocus = FocusAlerts
+	m.alertCursor = 0
+	view = m.View()
+	if view == "" {
+		t.Error("View() returned empty string with alerts focused")
+	}
+
+	// Render with detail overlay.
+	m.detailOverlay = true
+	m.detailTitle = "Test"
+	m.detailContent = "Test content"
+	view = m.View()
+	if view == "" {
+		t.Error("View() returned empty string with detail overlay")
+	}
+}
