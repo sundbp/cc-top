@@ -1,5 +1,7 @@
 # cc-top
 
+<video src="start_up_vid.mp4" autoplay loop muted playsinline></video>
+
 A terminal dashboard for monitoring [Claude Code](https://docs.anthropic.com/en/docs/claude-code) sessions in real time. Think `htop`, but for your AI coding assistant.
 
 cc-top acts as a lightweight OpenTelemetry collector that sits between Claude Code and your terminal, giving you live visibility into cost, token usage, API events, and process health across all running sessions.
