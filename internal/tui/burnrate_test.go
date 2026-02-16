@@ -117,13 +117,27 @@ func TestRenderBurnRatePanel(t *testing.T) {
 	m := NewModel(cfg, WithBurnRateProvider(mockBR))
 	m.width = 120
 	m.height = 40
+	m.cachedBurnRate = m.computeBurnRate()
 
 	panel := m.renderBurnRatePanel(60, 10)
+	stripped := stripAnsi(panel)
 	if panel == "" {
 		t.Error("renderBurnRatePanel returned empty string")
 	}
-	if !strings.Contains(panel, "Burn Rate") {
-		t.Error("burn rate panel should contain title 'Burn Rate'")
+	if !strings.Contains(stripped, "Burn Rate") {
+		t.Error("panel should contain title 'Burn Rate'")
+	}
+	if !strings.Contains(stripped, "Cost (all sessions):") {
+		t.Error("panel should contain 'Cost (all sessions):' label")
+	}
+	if !strings.Contains(stripped, "$42.50") {
+		t.Error("panel should contain total cost $42.50")
+	}
+	if !strings.Contains(stripped, "Rate (hourly):") {
+		t.Error("panel should contain 'Rate (hourly):' label")
+	}
+	if !strings.Contains(stripped, "Projected Spend:") {
+		t.Error("panel should contain 'Projected Spend:' label")
 	}
 }
 
@@ -135,63 +149,12 @@ func TestRenderBurnRatePanel_NilProvider(t *testing.T) {
 
 	// Should not panic with nil provider.
 	panel := m.renderBurnRatePanel(60, 10)
+	stripped := stripAnsi(panel)
 	if panel == "" {
 		t.Error("renderBurnRatePanel returned empty string with nil provider")
 	}
-	if !strings.Contains(panel, "$0.00") {
-		t.Error("burn rate panel with nil provider should show $0.00")
-	}
-}
-
-func TestRenderCostDisplay(t *testing.T) {
-	tests := []struct {
-		name       string
-		cost       string
-		availH     int
-		availW     int
-		wantRows   int
-		wantDollar bool
-	}{
-		{"large_font", "42.50", 10, 80, 5, true},
-		{"medium_font", "42.50", 3, 80, 3, true},
-		{"plain_fallback_short", "42.50", 2, 80, 1, true},
-		{"plain_fallback_narrow", "42.50", 10, 10, 1, true},
-		{"large_with_big_number", "1234.56", 10, 80, 5, true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := renderCostDisplay(tt.cost, tt.availH, tt.availW, costGreenStyle)
-			if result == "" {
-				t.Error("renderCostDisplay returned empty string")
-			}
-			lines := strings.Split(result, "\n")
-			if len(lines) != tt.wantRows {
-				t.Errorf("got %d rows, want %d", len(lines), tt.wantRows)
-			}
-			// All sizes should contain a "$" somewhere.
-			if tt.wantDollar && !strings.Contains(stripAnsi(result), "$") {
-				t.Errorf("result should contain $, got %q", result)
-			}
-		})
-	}
-}
-
-func TestRenderCostDisplay_DynamicScaling(t *testing.T) {
-	// Verify that increasing available height produces more rows (larger font).
-	small := renderCostDisplay("1.23", 2, 80, costGreenStyle)
-	medium := renderCostDisplay("1.23", 3, 80, costGreenStyle)
-	large := renderCostDisplay("1.23", 5, 80, costGreenStyle)
-
-	smallRows := len(strings.Split(small, "\n"))
-	medRows := len(strings.Split(medium, "\n"))
-	largeRows := len(strings.Split(large, "\n"))
-
-	if smallRows >= medRows {
-		t.Errorf("small (%d rows) should be shorter than medium (%d rows)", smallRows, medRows)
-	}
-	if medRows >= largeRows {
-		t.Errorf("medium (%d rows) should be shorter than large (%d rows)", medRows, largeRows)
+	if !strings.Contains(stripped, "Cost (all sessions): $0.00") {
+		t.Error("burn rate panel with nil provider should show 'Cost (all sessions): $0.00'")
 	}
 }
 
@@ -238,10 +201,10 @@ func TestRenderBurnRatePanel_WithProjections(t *testing.T) {
 	panel := m.renderBurnRatePanel(60, 14)
 	stripped := stripAnsi(panel)
 
-	if !strings.Contains(stripped, "Day $24.00") {
+	if !strings.Contains(stripped, "$24.00/day") {
 		t.Error("panel should contain daily projection")
 	}
-	if !strings.Contains(stripped, "Mon $720.00") {
+	if !strings.Contains(stripped, "$720.00/mon") {
 		t.Error("panel should contain monthly projection")
 	}
 }
@@ -325,11 +288,25 @@ func TestRenderBurnRatePanel_SessionAware(t *testing.T) {
 		t.Errorf("global burn rate TotalCost = %.2f, want 10.00", br.TotalCost)
 	}
 
+	// Global view panel should say "all sessions".
+	panel := m.renderBurnRatePanel(60, 10)
+	stripped := stripAnsi(panel)
+	if !strings.Contains(stripped, "Cost (all sessions):") {
+		t.Error("global panel should contain 'Cost (all sessions):' label")
+	}
+
 	// Session-specific view.
 	m.selectedSession = "sess-001"
 	m.cachedBurnRate = m.computeBurnRate()
 	br = m.getBurnRate()
 	if br.TotalCost != 5.00 {
 		t.Errorf("session burn rate TotalCost = %.2f, want 5.00", br.TotalCost)
+	}
+
+	// Session view panel should say "session".
+	panel = m.renderBurnRatePanel(60, 10)
+	stripped = stripAnsi(panel)
+	if !strings.Contains(stripped, "Cost (session):") {
+		t.Error("session panel should contain 'Cost (session):' label")
 	}
 }

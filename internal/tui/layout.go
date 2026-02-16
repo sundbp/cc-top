@@ -34,12 +34,12 @@ const (
 	alertsHeight = 3
 
 	// burnRateMinHeight is the minimum height of the burn rate panel.
-	// Plain text mode: title(1) + cost(1) + rate(1) + velocity(1) = 4 content + 2 border = 6.
-	burnRateMinHeight = 6
+	// title(1) + cost(1) + rate(1) + velocity(1) + projections(1) = 5 content + 2 border = 7.
+	burnRateMinHeight = 7
 
-	// burnRateLargeHeight is the ideal height for the large digit font.
-	// Large digits: title(1) + digits(5) + rate(1) + velocity(1) = 8 content + 2 border = 10.
-	burnRateLargeHeight = 10
+	// burnRateMaxHeight caps the burn rate panel so it doesn't waste space.
+	// title(1) + cost(1) + rate(1) + velocity(1) + projections(1) + up to 3 models = 8 content + 2 border = 10.
+	burnRateMaxHeight = 10
 )
 
 // computeDimensions calculates panel sizes from terminal dimensions.
@@ -77,20 +77,18 @@ func computeDimensions(totalW, totalH int) panelDimensions {
 		rightW = 20
 	}
 
-	// Burn rate panel: dynamic height — use the large font when there's
-	// room, medium when moderate, plain text when tight. The panel never
-	// takes more than 40% of the usable area so the event stream stays
-	// useful.
+	// Burn rate panel: compact height — plain text cost display doesn't
+	// need much vertical space. Use burnRateMaxHeight when there's room
+	// (to accommodate per-model breakdown rows), otherwise use min.
 	d.burnRateW = rightW
-	maxBR := usableH * 40 / 100
+	maxBR := usableH * 30 / 100
 	if maxBR < burnRateMinHeight {
 		maxBR = burnRateMinHeight
 	}
-	if maxBR >= burnRateLargeHeight {
-		d.burnRateH = burnRateLargeHeight
-	} else {
-		d.burnRateH = maxBR
+	if maxBR > burnRateMaxHeight {
+		maxBR = burnRateMaxHeight
 	}
+	d.burnRateH = maxBR
 	if d.burnRateH > usableH/2 {
 		d.burnRateH = usableH / 2
 	}
