@@ -1,0 +1,10 @@
+metadata-version = "1.0"
+
+[asset]
+  name = "project"
+  version = "1"
+  type = "rule"
+
+[rule]
+  title = "project"
+  prompt-file = "RULE.md"
